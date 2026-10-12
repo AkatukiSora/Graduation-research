@@ -397,6 +397,7 @@ def test_shared_budget_survives_independent_supervisor_processes(tmp_path):
                     output_path=None,
                     limits=limits,
                     attempt_state=state_path,
+                    resource_root=state_path.parent,
                 )
             except supervisor.SupervisorError as exc:
                 print(json.dumps({"error": str(exc)}))
