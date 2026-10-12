@@ -1,61 +1,63 @@
-# generation_io: portable candidate artifacts
+# 一時停止規制の候補データ生成
 
-`generation_io` は外部CSVと境界GeoJSONをread-onlyで検査し、候補専用artifactを生成・検証するCLIです。DB/APIや監督CLIは含みません。日本語のエラーはstderrへJSONで出力し、処理失敗時はexit code `2` です。
+`generation_io` は、規制CSVから指定地域の一時停止規制を抽出し、近隣点との距離・方位などの特徴量を持つ候補データを生成するCLIです。入力の検査、成果物の検証、候補計算の再実行に対応しています。
+
+実際の規制CSVと境界データは利用者が用意します。リポジトリにはテスト用の合成データだけを同梱しています。
 
 ## セットアップ
 
-Linux / Python `3.13.5` を対象にしています。lockfileに固定された依存関係と全dependency groupを使います。
+Linux、Python 3.13.5、[uv](https://docs.astral.sh/uv/) を使用します。リポジトリのルートから次を実行してください。
 
 ```sh
+cd backend/generation_io
 uv sync --locked --all-groups
 uv run --locked python -m generation_io --help
-uv run --locked python -m generation_io generate --help
-uv run --locked python -m generation_io prepare-input --help
 ```
 
-このリポジトリには入力データを同梱していません。実行前に、利用者が権利・利用条件を確認した外部入力を配置してください。CLIはデータを取得せず、権利を承認せず、入力ファイルを編集しません。
+以降のコマンドも `backend/generation_io` で実行します。
 
-## 入力を配置する
+## 入力データ
 
-例では入力directoryを`./external-data`とします。`source.csv`はCP932のk_2.1 CSV、`boundary.geojson`は対応するPolygonまたはMultiPolygonです。入力manifestは、外部ファイルの検査後に別ファイルとして明示的に作成します。
+次の2ファイルを、出力先とは別のディレクトリに配置します。
 
 ```text
 external-data/
-├── source.csv             # 利用者が配置。CLIはread-only
-└── boundary.geojson       # 利用者が配置。CLIはread-only
+├── source.csv
+└── boundary.geojson
 ```
+
+- **規制CSV**：CP932、拡張版標準フォーマット `k_2.1`、対応する170列のヘッダー。
+- **境界GeoJSON**：PolygonまたはMultiPolygonを持つ単一のFeature。座標はWGS84の経度・緯度。FeatureCollectionや座標変換には対応していません。
+
+データの取得元と利用条件を確認してから使用してください。CSVと境界ファイルは読取り専用で扱います。
+
+### 入力マニフェストの作成
+
+入力マニフェストは、ファイルのサイズ・ハッシュ、対象月、地域識別子、出典情報を記録するJSONです。
 
 ```sh
 uv run --locked python -m generation_io prepare-input \
   --data-dir ./external-data \
   --source source.csv \
   --boundary boundary.geojson \
-  --source-month 202701 \
-  --region-id example:region \
-  --manifest-out ./external-data/input-manifest.json \
-  --dataset unknown \
-  --publisher unknown \
-  --edition unknown \
-  --retrieved-at unknown \
-  --terms-reference unknown \
-  --rights-status unknown
+  --source-month 202602 \
+  --region-id jp:aichi:nagoya \
+  --manifest-out ./external-data/input-manifest.json
 ```
 
-`--source`と`--boundary`は`--data-dir`からの相対pathです。absolute path、`..` traversal、symlink、CSV/GeoJSON以外の拡張子、未対応header/format/month/CRSは拒否します。初回のCSV対応範囲はCP932・k_2.1・170列headerに限られます。GeoJSONのgeometryとCRSは`region.load_boundary`で検査します。作成先の親directoryはあらかじめ作成してください。
+対象月と地域識別子は、用意したデータに合わせて指定します。`--source` と `--boundary` は入力ディレクトリからの相対パスです。絶対パス、親ディレクトリへの参照、シンボリックリンクは受け付けません。
 
-`--manifest-out`は入力CSV/境界とは別のpathを指定します。入力directory内への明示作成も可能ですが、manifestは`O_EXCL`相当のexclusive createで保存し、既存fileは上書きしません。入力CSVと境界は変更されません。`dataset`、`publisher`、`edition`、`retrieved_at`、`terms_reference`、`rights_status`は利用者が指定した文字列を保持します。省略時はすべて`unknown`で、`rights_status`が`approved`等に自動設定されることはありません。値を入力しても権利判断・承認を意味しません。
+出典情報は `--dataset`、`--publisher`、`--edition`、`--retrieved-at`、`--terms-reference`、`--rights-status` で指定できます。省略した情報は `unknown` として記録します。合成データの場合は `--synthetic` を指定します。
 
-`--synthetic`は利用者が合成入力と申告する場合だけ指定します。省略時は`synthetic: false`です。どちらの場合も`production_approved: false`です。manifestとCLI JSONのsize/SHA-256/CRC32は検査時点で観測したbyte integrity値であり、真正性・出所・利用権の証明ではありません。
+`prepare-input` は指定先にマニフェストを新規作成し、既存ファイルを上書きしません。ハッシュは検査時点のファイルとの一致を確認するためのもので、提供元の真正性や利用許諾を証明するものではありません。
 
-## generate → verify → resume → verify
-
-生成outputは新しいdirectoryである必要があります。既存pathは空directoryでも拒否されます。output/stateは入力directoryと分離してください。`--output`は`--output-dir`と同じ意味の互換aliasです。
+## 生成・検証・再計算
 
 ```sh
 uv run --locked python -m generation_io generate \
   --data-dir ./external-data \
   --input-manifest input-manifest.json \
-  --region-id example:region \
+  --region-id jp:aichi:nagoya \
   --output-dir ./run-001
 
 uv run --locked python -m generation_io verify \
@@ -64,47 +66,27 @@ uv run --locked python -m generation_io verify \
 uv run --locked python -m generation_io resume \
   --manifest ./run-001/generation-manifest.json \
   --output-dir ./run-002
-
-uv run --locked python -m generation_io verify \
-  --manifest ./run-002/generation-manifest.json
 ```
 
-`generate`は`input-manifest.json`とsource/boundaryをdata-dir内からread-onlyで検査し、portable schema 3 artifactを作成します。`verify`はartifactとgeneration manifestだけを使い、元CSV・境界なしで実行できます。artifact directoryを移動した後も、移動先の`generation-manifest.json`を指定すれば検証できます。`resume`は検証済みstateからkernel部分を再計算するもので、raw CSVの再読込やregion clippingの再実行ではありません。resume元と別の新規output directoryを指定してください。
+`generate` は入力を検査して地域内の候補を生成します。出力先は未作成のディレクトリを指定してください。既存の空ディレクトリも使用できません。
 
-成功時のJSONは`status: complete`（generate/resume）または`status: verified`（verify）、`schema_version: 3`、`production_approved: false`を明示します。候補が0件でも正常な完了です。candidate bearingは候補点同士の幾何上のbearingに限られ、道路の進行方向・規制の公式方向・現場判断を示しません。
+`verify` は成果物の形式、件数、サイズ、ハッシュを検査します。元CSVや境界データは不要です。成果物ディレクトリを移動した場合も、移動先のマニフェストを指定して検証できます。
 
-この実装では規制種別コード`63`を候補対象として扱い、それ以外は除外します。更新区分が空でない行は現状のportable処理ではunsupportedとしてrejectし、更新の意味や現行性を推測しません。正規化結果も候補専用であり、production承認や規制の有効性を表しません。
+`resume` は検証済みの正規化データから候補特徴量を再計算します。CSVの再読込みや地域抽出は行わず、元の成果物を変更しません。再計算先は別の新規ディレクトリを指定します。再計算後も `verify` で検証できます。
 
-固定selected-projection研究用APIのCLI入口は`legacy-generate`、`legacy-verify`、`legacy-resume`として分離しています。portable `generate`はlegacy ownership receiptを要求しません。旧引数を使うresearch callerは明示的に`legacy-*`へ切り替える必要があります。これらlegacyコマンドは固定研究contractに依存し、clone利用者向けportable手順ではありません。
+### 出力ファイル
 
-### 出力上限
+- `normalized.jsonl`：地域内の正規化済み規制レコード。
+- `rejected.jsonl`：候補にできなかったレコードと理由。
+- `candidates.jsonl`：近隣点との距離・方位などの候補特徴量。
+- `source-manifest.json`：入力の参照情報と出典。
+- `generation-manifest.json`：成果物のサイズ・ハッシュ・件数・計算条件。
 
-- `32 MiB`: 1つのgeneration artifactに含まれるartifact/report等のシリアライズ済み出力の合計上限。
-- `8 MiB`: source manifestとgeneration manifest等のreport合計上限。
+成功時は標準出力にJSONを返します。`status` は生成・再計算で `complete`、検証で `verified` です。候補が0件でも正常終了です。失敗時は標準エラー出力にエラー情報を返し、終了コードは `2` になります。
 
-これは生成物/reportの上限です。入力CSVサイズの上限を意味するものではありません。入力CSVは全件をメモリへ読み込まずstreamingで処理します。
+## 時間・メモリを監視して実行する
 
-## 合成テストとCI
-
-リポジトリrootからpackage directoryへ移動し、lockfileにあるすべてのgroupを同期します。
-
-```sh
-cd backend/generation_io
-uv --version
-uv lock --check
-uv sync --locked --all-groups
-uv run --locked --no-sync python -m generation_io --help
-uv run --locked --no-sync python -m pytest -p no:cacheprovider -q
-```
-
-`pyproject.toml`の標準pytest収集先は`tests/`です。標準suiteはtracked synthetic fixtureと一時directoryだけを使い、real/raw regulatory data、G01/G02 evidence、P02/P05 sibling checkoutやruntimeを読みません。supervisor testsも一時resource directoryを使いますが、production resource capsや厳密なtiming assertionは変更していません。`.github/workflows/generation-io.yml`はpull requestとmainへのpushでこのlock/test手順をLinux・Python `3.13.5`上で実行し、realdata/evidenceを使いません。
-
-固定fixtureや過去operator acceptance依存のtestは、内容を保持したまま`tools/legacy_acceptance/tests/`へ移動しました。移動理由とportable synthetic coverage map、歴史receiptの制約は[`tools/README.md`](tools/README.md)を参照してください。これらはstandard collectionやCIに含まれず、skip/xfailで成功扱いもしません。歴史testを明示実行する場合は、READMEに記載した元の外部read-only evidence環境が必要です。
-
-D6のfresh isolated snapshotでは`uv lock --check` / `uv sync --locked --all-groups`が成功し、import pathがsnapshot内の新しい`.venv`と`generation_io`を指すことを確認しました。全suiteは初回`127 passed, 1 failed`（独立supervisor processの120ms stageでchild marker未生成）、コード・上限を変えない再実行は`128 passed, 0 failed, 0 skipped in 109.52s`でした。後続の旧D6 6ケース個別実行は`5 passed, 1 failed`で、同じ120msケースは単独再実行ではpassしています。このtiming結果は非決定的であり、安定した全6件passとは扱いません。test capやpublic limitは変更していません。
-## 監督手順
-
-通常の`python -m generation_io`（generate/verify/resume）はportable artifact CLIであり、単独ではプロセス監督・共有budget・child process-group cleanupを行いません。運用時は既存supervisorを使い、利用者が書込み可能なstate directoryを入力directoryおよび各artifact directoryと重ならない場所に用意してください。親directoryは事前に作成します。監督CLIは入力を取得・編集せず、既存artifactを上書きしません。
+通常のCLIは成果物を直接生成します。実行時間やメモリを監視する場合は `generation_io.supervisor` を使用します。入力、成果物、実行状態のディレクトリは互いに独立した場所を指定してください。
 
 ```sh
 uv run --locked python -m generation_io.supervisor \
@@ -115,26 +97,47 @@ uv run --locked python -m generation_io.supervisor \
   --state-dir ./supervisor-state \
   --data-dir ./external-data \
   --input-manifest input-manifest.json \
-  --region-id example:region \
-  --output-dir ./run-001
+  --region-id jp:aichi:nagoya \
+  --output-dir ./supervised-run-001
 
 uv run --locked python -m generation_io.supervisor \
   --stage verify \
   --state-dir ./supervisor-state \
-  --manifest ./run-001/generation-manifest.json
-
-uv run --locked python -m generation_io.supervisor \
-  --stage resume \
-  --state-dir ./supervisor-state \
-  --manifest ./run-001/generation-manifest.json \
-  --output-dir ./run-002
-
-uv run --locked python -m generation_io.supervisor \
-  --stage verify \
-  --state-dir ./supervisor-state \
-  --manifest ./run-002/generation-manifest.json
+  --manifest ./supervised-run-001/generation-manifest.json
 ```
 
-初期化はexclusive createで、既存の`budget-state.json`を上書き・resetしません。state directoryとdata/output/verify対象artifactはcanonical pathで分離し、symlinkや相互の親子重複を拒否します。各stageのlog、report、ownership receiptはstate directory内の新しい`attempts/attempt-<id>/`に保存されます。verifyはread-onlyでreceiptを作らず、generate/resume失敗後のcomplete manifest撤回は一致するownership/published receiptがある場合だけ行います。
+再計算は `--stage resume --manifest ... --output-dir ...` で実行できます。
 
-監督budgetは固定値です: RSS 512 MiB、memory/disk headroom各1 GiB、artifact output 32 MiB、report/log 8 MiB、共有aggregate 600秒、task 3600秒、generate/resume各120秒、verify 60秒です。CLIから上限を引き上げるoptionはありません。旧`--attempt-state`は固定G02 evidence用のlegacy入口であり、portable利用では`--state-dir`を使用してください。
+実行状態の初期化は一度だけ行います。既存の `budget-state.json` は上書きされません。同じ実行状態を使う処理の消費時間は累積して記録され、残予算がない場合は次の処理を起動しません。
+
+実行状態には各処理のログ・監視結果・出力の所有権記録を保存します。子プロセスの終了を確認できない場合は未完了状態を保持し、後続処理を拒否します。検証対象や所有権を確認できない出力は削除しません。
+
+### 実行上限
+
+- 子プロセスのRSS：512 MiB。開始・実行時に必要なメモリとディスクの空き：各1 GiB。
+- 成果物の合計：32 MiB。生成マニフェスト等のレポート合計：8 MiB。
+- 監視レポート・ログ：8 MiB。
+- 監督実行の生成・再計算：各120秒。検証：60秒。
+- 同じ実行状態の累積予算：600秒。実行状態の有効時間：初期化から3600秒。
+
+CSVは逐次読み込みますが、候補計算では地域内の正規化済み点をメモリに保持します。上記は入力CSVのサイズ上限ではありません。処理終了・回収にかかった時間も累積予算へ記録します。
+
+## データの意味と利用上の注意
+
+規制種別コード `63` を候補対象とし、その他の規制は除外します。更新区分が空でない行は未対応として記録します。更新区分の意味や規制の現在の有効性は判定しません。
+
+候補の方位は点間の幾何的な方向です。標識の向き、道路の進行方向、安全な進入方向を保証するものではありません。成果物には `production_approved: false` を記録します。
+
+信頼できるローカル環境で使用してください。検査中に第三者が入力やディレクトリを変更する環境での安全性は保証していません。
+
+## テスト
+
+```sh
+uv lock --check
+uv sync --locked --all-groups
+uv run --locked --no-sync python -m pytest -p no:cacheprovider -q
+```
+
+標準テストは合成データと一時ディレクトリを使用し、実際の規制情報を必要としません。GitHub Actionsでも同じテストをLinux・Python 3.13.5で実行します。
+
+固定された研究データを使用する検証ツールと `legacy-*` コマンドについては、[検証ツールの説明](tools/README.md)を参照してください。
