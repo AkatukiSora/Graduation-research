@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Sequence
 
 
@@ -27,7 +27,7 @@ REPORT_BUDGET_BYTES = 8 * 1024 * 1024
 POLL_SECONDS = 0.05
 TERMINATE_GRACE_SECONDS = 2.0
 ROOT = Path("/opt/data/workspaces/graduation-research-g02")
-PACKAGE = ROOT / "backend/generation_io"
+PACKAGE = Path(__file__).resolve().parents[1]
 EVIDENCE = Path("/opt/data/workspaces/graduation-research-evidence/unified-work/G02-revision4")
 PYTHON = Path("/opt/data/workspaces/graduation-research-evidence/unified-work/P02/.venv/bin/python")
 P05 = "/opt/data/workspaces/graduation-research-p05/backend/generation"
@@ -254,13 +254,14 @@ def _supervise(
     invocation_id: str | None = None,
     ownership_receipt: str | Path | None = None,
     published_receipt: str | Path | None = None,
+    resource_root: str | Path | None = None,
 ) -> dict[str, Any]:
     if attempt_state is None:
         return _supervise_impl(
             argv, cwd=cwd, env=env, stage=stage, log_path=log_path,
             report_path=report_path, output_path=output_path, limits=limits,
             ownership_receipt=ownership_receipt, published_receipt=published_receipt,
-            invocation_id=invocation_id,
+            invocation_id=invocation_id, resource_root=resource_root,
         )
     state_path = _state_path(attempt_state)
     lock_fd = _acquire_budget_lock(state_path)
@@ -332,6 +333,7 @@ def _supervise(
                 report_path=report_path, output_path=output_path, limits=limits,
                 _budget_context=context, ownership_receipt=ownership_receipt,
                 published_receipt=published_receipt, invocation_id=invocation,
+                resource_root=resource_root,
             )
         except BaseException:
             if not context["spawned"] and state["in_flight"] is not None:
@@ -360,12 +362,14 @@ def _supervise_impl(
     ownership_receipt: str | Path | None = None,
     published_receipt: str | Path | None = None,
     invocation_id: str | None = None,
+    resource_root: str | Path | None = None,
 ) -> dict[str, Any]:
     command = [os.fspath(part) for part in argv]
     workdir = Path(cwd)
     log_file = Path(log_path)
     report_file = Path(report_path)
     output = Path(output_path) if output_path is not None else None
+    disk_root = Path(resource_root) if resource_root is not None else EVIDENCE
     log_file.parent.mkdir(parents=True, exist_ok=True)
     report_file.parent.mkdir(parents=True, exist_ok=True)
     _reject_symlink_path(log_file.parent)
@@ -388,7 +392,7 @@ def _supervise_impl(
             pending_exception = (exc, exc.__traceback__)
 
     def invalidate_owned_output() -> None:
-        if output is None or stage != "generate":
+        if output is None or stage not in {"generate", "resume"}:
             return
         try:
             _invalidate_owned_complete(
@@ -403,7 +407,7 @@ def _supervise_impl(
                 if not command or not workdir.is_dir():
                     raise SupervisorError("invalid_child_command_or_cwd")
                 available_memory = _available_memory_bytes()
-                disk_free = shutil.disk_usage(EVIDENCE).free
+                disk_free = shutil.disk_usage(disk_root).free
                 min_disk_free = disk_free
                 if available_memory < limits.minimum_memory_free_bytes:
                     raise SupervisorError("memory_headroom_below_budget")
@@ -466,7 +470,7 @@ def _supervise_impl(
                     current_log_size = os.fstat(log_stream.fileno()).st_size
                     if current_log_size > limits.report_bytes:
                         failure_reason = "report_budget_exceeded"
-                    current_disk_free = shutil.disk_usage(EVIDENCE).free
+                    current_disk_free = shutil.disk_usage(disk_root).free
                     min_disk_free = min(min_disk_free, current_disk_free)
                     if current_disk_free < limits.minimum_disk_free_bytes:
                         failure_reason = "disk_headroom_below_budget"
@@ -669,7 +673,7 @@ def run_stage(
             "-B",
             "-m",
             "generation_io",
-            "generate",
+            "legacy-generate",
             "--source",
             "/opt/data/workspaces/graduation-research-evidence/unified-work/G01/fixtures/selected-fields.jsonl",
             "--source-contract",
@@ -692,7 +696,7 @@ def run_stage(
         if manifest is None or output is not None:
             raise SupervisorError("verify_requires_only_manifest")
         manifest_path = _owned_manifest(manifest)
-        argv = [str(PYTHON), "-B", "-m", "generation_io", "verify", "--manifest", str(manifest_path)]
+        argv = [str(PYTHON), "-B", "-m", "generation_io", "legacy-verify", "--manifest", str(manifest_path)]
         output_path = manifest_path.parent
         limit = _Limits(**{**asdict(_PRODUCTION_LIMITS), "wall_seconds": 60.0})
 
@@ -709,6 +713,259 @@ def run_stage(
         invocation_id=invocation_id,
         ownership_receipt=attempt_dir / "ownership.json" if stage == "generate" else None,
         published_receipt=attempt_dir / "published-files.json" if stage == "generate" else None,
+    )
+
+
+def _portable_raw_path(value: str | Path, error_code: str) -> Path:
+    try:
+        raw = os.fspath(value)
+        if (
+            not isinstance(raw, str)
+            or not raw
+            or chr(0) in raw
+            or chr(92) in raw
+            or PureWindowsPath(raw).drive
+            or ".." in Path(raw).parts
+        ):
+            raise SupervisorError(error_code)
+        return Path(raw)
+    except SupervisorError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise SupervisorError(error_code) from exc
+
+
+def _portable_state_directory(value: str | Path, *, create: bool) -> Path:
+    raw = _portable_raw_path(value, "state_dir_invalid")
+    path = raw if raw.is_absolute() else Path.cwd() / raw
+    path = Path(os.path.abspath(path))
+    _reject_symlink_path(path)
+    if os.path.lexists(path):
+        if path.is_symlink() or not path.is_dir():
+            raise SupervisorError("state_dir_invalid")
+    elif create:
+        if not path.parent.is_dir():
+            raise SupervisorError("state_dir_parent_missing")
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_dir():
+                raise SupervisorError("state_dir_invalid")
+        except OSError as exc:
+            raise SupervisorError("state_dir_create_failed") from exc
+    else:
+        raise SupervisorError("state_dir_missing")
+    return path.resolve(strict=True)
+
+
+def _initialize_portable_attempt(state_dir: str | Path) -> tuple[dict[str, Any], Path]:
+    root = _portable_state_directory(state_dir, create=True)
+    state_path = root / "budget-state.json"
+    return _initialize_attempt_state(state_path), state_path
+
+
+def _portable_data_directory(value: str | Path) -> Path:
+    raw = _portable_raw_path(value, "data_dir_invalid")
+    path = raw if raw.is_absolute() else Path.cwd() / raw
+    path = Path(os.path.abspath(path))
+    _reject_symlink_path(path)
+    if path.is_symlink() or not path.is_dir():
+        raise SupervisorError("data_dir_invalid")
+    return path.resolve(strict=True)
+
+
+def _portable_output_path(value: str | Path) -> Path:
+    raw = _portable_raw_path(value, "output_path_invalid")
+    path = raw if raw.is_absolute() else Path.cwd() / raw
+    path = Path(os.path.abspath(path))
+    _reject_symlink_path(path.parent)
+    if os.path.lexists(path):
+        raise SupervisorError("output_exists")
+    if not path.parent.is_dir():
+        raise SupervisorError("output_parent_missing")
+    return path.parent.resolve(strict=True) / path.name
+
+
+def _portable_manifest_path(value: str | Path) -> Path:
+    raw = _portable_raw_path(value, "manifest_path_invalid")
+    path = raw if raw.is_absolute() else Path.cwd() / raw
+    path = Path(os.path.abspath(path))
+    _reject_symlink_path(path)
+    try:
+        if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+            raise SupervisorError("manifest_must_be_regular")
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise SupervisorError("manifest_must_be_regular") from exc
+
+
+def _portable_manifest_name(value: str) -> str:
+    if not isinstance(value, str) or not value or chr(92) in value or "\\\\" in value:
+        raise SupervisorError("input_manifest_name_invalid")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or PureWindowsPath(value).drive or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise SupervisorError("input_manifest_name_invalid")
+    return relative.as_posix()
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
+
+
+def _require_separate_paths(*paths: Path) -> None:
+    for index, left in enumerate(paths):
+        for right in paths[index + 1 :]:
+            if _paths_overlap(left, right):
+                raise SupervisorError("portable_roots_overlap")
+
+
+def run_portable_stage(
+    stage: str,
+    *,
+    state_dir: str | Path,
+    data_dir: str | Path | None = None,
+    input_manifest: str | None = None,
+    region_id: str | None = None,
+    output: str | Path | None = None,
+    manifest: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run one portable CLI stage under a caller-owned shared state directory."""
+    if stage not in {"generate", "verify", "resume"}:
+        raise SupervisorError("unknown_stage")
+    state_root = _portable_state_directory(state_dir, create=False)
+    state_path = _state_path(state_root / "budget-state.json")
+    state = _load_attempt_state(state_path)
+    now = time.monotonic()
+    if state["task_deadline_monotonic"] - now <= 0:
+        raise SupervisorError("task_budget_exhausted")
+    if state["aggregate_limit_seconds"] - state["aggregate_consumed_seconds"] <= 0:
+        raise SupervisorError("aggregate_budget_exhausted")
+
+    data_root: Path | None = None
+    manifest_name: str | None = None
+    manifest_path: Path | None = None
+    output_path: Path | None = None
+    if stage == "generate":
+        if data_dir is None or input_manifest is None or region_id is None or output is None or manifest is not None:
+            raise SupervisorError("generate_requires_data_manifest_region_output")
+        data_root = _portable_data_directory(data_dir)
+        manifest_name = _portable_manifest_name(input_manifest)
+        output_path = _portable_output_path(output)
+        _require_separate_paths(state_root, data_root, output_path)
+        input_path = data_root / manifest_name
+        _reject_symlink_path(input_path)
+        try:
+            if not stat.S_ISREG(input_path.lstat().st_mode):
+                raise SupervisorError("input_manifest_must_be_regular")
+        except OSError as exc:
+            raise SupervisorError("input_manifest_must_be_regular") from exc
+    elif stage == "verify":
+        if manifest is None or any(value is not None for value in (data_dir, input_manifest, region_id, output)):
+            raise SupervisorError("verify_requires_only_manifest")
+        manifest_path = _portable_manifest_path(manifest)
+        _require_separate_paths(state_root, manifest_path.parent)
+    else:
+        if manifest is None or output is None or any(value is not None for value in (data_dir, input_manifest, region_id)):
+            raise SupervisorError("resume_requires_manifest_output")
+        manifest_path = _portable_manifest_path(manifest)
+        output_path = _portable_output_path(output)
+        _require_separate_paths(state_root, manifest_path.parent, output_path)
+
+    attempt_dir = _new_attempt_directory(state_root / "attempts")
+    invocation_id = str(uuid.uuid4())
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONHASHSEED": "0",
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        }
+    )
+    receipt_args: dict[str, str] = {}
+    if stage == "generate":
+        argv = [
+            sys.executable,
+            "-B",
+            "-m",
+            "generation_io",
+            "generate",
+            "--data-dir",
+            str(data_root),
+            "--input-manifest",
+            manifest_name,
+            "--region-id",
+            region_id,
+            "--output-dir",
+            str(output_path),
+            "--ownership-receipt",
+            str(attempt_dir / "ownership.json"),
+            "--published-receipt",
+            str(attempt_dir / "published-files.json"),
+            "--invocation-id",
+            invocation_id,
+        ]
+        wall_seconds = 120.0
+        output_path_arg: Path | None = output_path
+        receipt_args = {
+            "ownership_receipt": str(attempt_dir / "ownership.json"),
+            "published_receipt": str(attempt_dir / "published-files.json"),
+        }
+    elif stage == "verify":
+        argv = [
+            sys.executable,
+            "-B",
+            "-m",
+            "generation_io",
+            "verify",
+            "--manifest",
+            str(manifest_path),
+        ]
+        wall_seconds = 60.0
+        output_path_arg = None
+    else:
+        argv = [
+            sys.executable,
+            "-B",
+            "-m",
+            "generation_io",
+            "resume",
+            "--manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_path),
+            "--ownership-receipt",
+            str(attempt_dir / "ownership.json"),
+            "--published-receipt",
+            str(attempt_dir / "published-files.json"),
+            "--invocation-id",
+            invocation_id,
+        ]
+        wall_seconds = 120.0
+        output_path_arg = output_path
+        receipt_args = {
+            "ownership_receipt": str(attempt_dir / "ownership.json"),
+            "published_receipt": str(attempt_dir / "published-files.json"),
+        }
+
+    limits = _Limits(**{**asdict(_PRODUCTION_LIMITS), "wall_seconds": wall_seconds})
+    return _supervise(
+        argv,
+        cwd=PACKAGE,
+        env=env,
+        stage=stage,
+        log_path=attempt_dir / f"{stage}.log",
+        report_path=attempt_dir / f"{stage}.json",
+        output_path=output_path_arg,
+        limits=limits,
+        attempt_state=state_path,
+        invocation_id=invocation_id,
+        resource_root=state_root,
+        **receipt_args,
     )
 
 
@@ -809,13 +1066,21 @@ def _tree_size(path: Path) -> int:
     for root, directories, files in os.walk(path, followlinks=False):
         root_path = Path(root)
         for name in directories:
-            if (root_path / name).is_symlink():
-                raise SupervisorError("output_symlink_detected")
+            directory = root_path / name
+            try:
+                if directory.is_symlink():
+                    raise SupervisorError("output_symlink_detected")
+            except FileNotFoundError:
+                continue
         for name in files:
             file_path = root_path / name
-            if file_path.is_symlink():
+            try:
+                info = file_path.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
                 raise SupervisorError("output_symlink_detected")
-            total += file_path.stat().st_size
+            total += info.st_size
     return total
 
 
@@ -997,33 +1262,86 @@ def _reject_symlink_path(path: Path) -> None:
 
 
 def _owned_code_refs() -> list[dict[str, object]]:
-    suffixes = {".py", ".json", ".toml", ".lock", ".yaml", ".yml", ".csv", ".jsonl"}
-    refs: list[dict[str, object]] = []
-    for path in sorted(PACKAGE.rglob("*")):
-        relative = path.relative_to(PACKAGE)
-        if "__pycache__" in relative.parts or ".pytest_cache" in relative.parts:
-            continue
-        if not path.is_file() or (path.suffix.lower() not in suffixes and "fixtures" not in relative.parts):
-            continue
-        _reject_symlink_path(path)
+    runtime_root = PACKAGE / "generation_io"
+    candidates: list[Path] = []
+
+    def collect_runtime_files(directory: Path) -> None:
         try:
-            info = path.stat(follow_symlinks=False)
-            if not stat.S_ISREG(info.st_mode):
-                raise SupervisorError("owned_code_ref_not_regular")
-            data = path.read_bytes()
+            with os.scandir(directory) as entries:
+                ordered_entries = sorted(entries, key=lambda entry: entry.name)
         except OSError as exc:
             raise SupervisorError("owned_code_ref_unreadable") from exc
-        refs.append({"path": str(path), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        for entry in ordered_entries:
+            path = Path(entry.path)
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise SupervisorError("owned_code_ref_unreadable") from exc
+            if stat.S_ISLNK(info.st_mode):
+                raise SupervisorError("supervisor_path_symlink")
+            if stat.S_ISDIR(info.st_mode):
+                collect_runtime_files(path)
+            elif path.suffix in {".py", ".json"}:
+                if not stat.S_ISREG(info.st_mode):
+                    raise SupervisorError("owned_code_ref_not_regular")
+                candidates.append(path)
+
+    try:
+        _reject_symlink_path(runtime_root)
+        runtime_info = runtime_root.lstat()
+    except OSError as exc:
+        raise SupervisorError("owned_code_ref_unreadable") from exc
+    if not stat.S_ISDIR(runtime_info.st_mode):
+        raise SupervisorError("owned_code_ref_not_regular")
+    collect_runtime_files(runtime_root)
+
+    for name in ("pyproject.toml", "uv.lock"):
+        path = PACKAGE / name
+        try:
+            _reject_symlink_path(path)
+            info = path.lstat()
+        except FileNotFoundError as exc:
+            raise SupervisorError("owned_code_manifest_missing") from exc
+        except OSError as exc:
+            raise SupervisorError("owned_code_ref_unreadable") from exc
+        if not stat.S_ISREG(info.st_mode):
+            raise SupervisorError("owned_code_ref_not_regular")
+        candidates.append(path)
+
+    refs: list[dict[str, object]] = []
+    for path in sorted(candidates):
+        _reject_symlink_path(path)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise SupervisorError("owned_code_ref_not_regular")
+                while chunk := stream.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+        except SupervisorError:
+            raise
+        except OSError as exc:
+            raise SupervisorError("owned_code_ref_unreadable") from exc
+        refs.append({"path": str(path), "bytes": size, "sha256": digest.hexdigest()})
     return refs
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a fixed G02 stage under frozen budgets.")
+    parser = argparse.ArgumentParser(
+        description="Run portable CLI stages under shared frozen resource budgets."
+    )
     operation = parser.add_mutually_exclusive_group(required=True)
-    operation.add_argument("--stage", choices=("tests", "generate", "verify"))
+    operation.add_argument("--stage", choices=("tests", "generate", "verify", "resume"))
     operation.add_argument("--init-attempt", action="store_true")
-    parser.add_argument("--attempt-state", required=True)
-    parser.add_argument("--output")
+    parser.add_argument("--state-dir", help="caller-owned portable supervisor state directory")
+    parser.add_argument("--attempt-state", help="legacy fixed G02 budget-state.json path")
+    parser.add_argument("--data-dir")
+    parser.add_argument("--input-manifest")
+    parser.add_argument("--region-id")
+    parser.add_argument("--output-dir", "--output", dest="output")
     parser.add_argument("--manifest")
     return parser.parse_args(argv)
 
@@ -1031,22 +1349,82 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
+        if args.init_attempt:
+            if args.state_dir is not None and args.attempt_state is not None:
+                raise SupervisorError("choose_state_dir_or_legacy_attempt_state")
+            if args.state_dir is not None:
+                state, state_path = _initialize_portable_attempt(args.state_dir)
+                payload = {
+                    "status": "initialized",
+                    "workflow_id": state["workflow_id"],
+                    "state_path": str(state_path),
+                }
+            elif args.attempt_state is not None:
+                if Path(args.attempt_state).absolute() != ATTEMPT_STATE:
+                    raise SupervisorError("budget_state_path_mismatch")
+                state = _initialize_attempt_state(args.attempt_state)
+                payload = {
+                    "status": "initialized",
+                    "workflow_id": state["workflow_id"],
+                    "state_path": str(ATTEMPT_STATE),
+                    "legacy": True,
+                }
+            else:
+                raise SupervisorError("state_dir_required")
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
+
+        if args.state_dir is not None and args.attempt_state is not None:
+            raise SupervisorError("choose_state_dir_or_legacy_attempt_state")
+        if args.state_dir is not None:
+            if args.stage == "tests":
+                raise SupervisorError("tests_stage_is_legacy_only")
+            report = run_portable_stage(
+                args.stage,
+                state_dir=args.state_dir,
+                data_dir=args.data_dir,
+                input_manifest=args.input_manifest,
+                region_id=args.region_id,
+                output=args.output,
+                manifest=args.manifest,
+            )
+            payload = {
+                "status": report["status"],
+                "stage": args.stage,
+                "budget_report": report["budget_report_path"],
+            }
+            if args.stage in {"generate", "resume"} and report.get("output_path"):
+                payload["manifest"] = str(Path(report["output_path"]) / "generation-manifest.json")
+            if report.get("failure_reason"):
+                payload["failure_reason"] = report["failure_reason"]
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0 if report["status"] == "complete" else 2
+
+        if args.attempt_state is None:
+            raise SupervisorError("state_dir_required")
         if Path(args.attempt_state).absolute() != ATTEMPT_STATE:
             raise SupervisorError("budget_state_path_mismatch")
-        if args.init_attempt:
-            state = _initialize_attempt_state(args.attempt_state)
-            print(json.dumps({"status": "initialized", "workflow_id": state["workflow_id"], "state_path": str(ATTEMPT_STATE)}, ensure_ascii=False))
-            return 0
+        if args.stage == "resume":
+            raise SupervisorError("resume_is_portable_only")
         report = run_stage(
             args.stage,
             attempt_state=args.attempt_state,
             output=args.output,
             manifest=args.manifest,
         )
-    except (OSError, SupervisorError) as exc:
+    except (OSError, SupervisorError, TypeError, ValueError) as exc:
         print(json.dumps({"status": "failed", "error_code": str(exc)}, ensure_ascii=False))
         return 2
-    print(json.dumps({"status": report["status"], "budget_report": report["budget_report_path"]}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "status": report["status"],
+                "budget_report": report["budget_report_path"],
+                "legacy": True,
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0 if report["status"] == "complete" else 2
 
 

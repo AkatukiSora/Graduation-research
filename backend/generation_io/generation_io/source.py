@@ -9,7 +9,7 @@ import zlib
 from decimal import Decimal, InvalidOperation
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 
 FIXTURE_MANIFEST_SHA256 = "900bab5cd47cacbc191a5edd7e9afb709aeca1163146689b08de30269f554c88"
@@ -156,12 +156,30 @@ def load_selected_projection(
 
 
 def iter_raw_records(stream: BinaryIO, contract: dict[str, Any]):
-    if contract.get("source_month") != SOURCE_MONTH:
+    """Read the legacy fixed-month raw contract without changing its defaults."""
+    yield from _iter_raw_records(stream, contract, expected_month=SOURCE_MONTH)
+
+
+def _iter_raw_records(
+    stream: BinaryIO,
+    contract: dict[str, Any],
+    *,
+    expected_month: str,
+    include_raw: bool = False,
+):
+    """Shared parser; portable callers provide a schema hash instead of a header list."""
+    if contract.get("source_month") != expected_month:
         raise SourceError("unknown_month")
     if contract.get("version") != SOURCE_VERSION:
         raise SourceError("unknown_version")
+    contract_has_header = "header" in contract
     header = contract.get("header")
-    if not _header_matches_hash(header):
+    header_columns: list[str] | None = None
+    if contract_has_header:
+        if not _header_matches_hash(header):
+            raise SourceError("header_hash_mismatch")
+        header_columns = cast(list[str], header)
+    elif contract.get("header_sha256") != HEADER_SHA256:
         raise SourceError("header_hash_mismatch")
     expected_sha = contract.get("csv_sha256")
     expected_crc = contract.get("csv_crc32")
@@ -202,9 +220,16 @@ def iter_raw_records(stream: BinaryIO, contract: dict[str, Any]):
             actual_header = next(reader)
         except StopIteration as exc:
             raise SourceError("empty_source") from exc
-        if actual_header != header:
-            raise SourceError("header_mismatch")
-        indexes = {name: index for index, name in enumerate(header)}
+        if contract_has_header:
+            if actual_header != header_columns:
+                raise SourceError("header_mismatch")
+        else:
+            if not _header_matches_hash(actual_header):
+                raise SourceError("header_mismatch")
+            header_columns = actual_header
+        if header_columns is None:
+            raise SourceError("header_hash_mismatch")
+        indexes = {name: index for index, name in enumerate(header_columns)}
         column_names = {
             "version": "拡張版標準フォーマット種別・バージョン",
             "prefecture": "都道府県コード",
@@ -218,7 +243,7 @@ def iter_raw_records(stream: BinaryIO, contract: dict[str, Any]):
         }
         seen: set[str] = set()
         for source_row, raw_row in enumerate(reader, start=2):
-            if len(raw_row) != len(header):
+            if len(raw_row) != len(header_columns):
                 raise SourceError("invalid_row_width")
             selected = {
                 key: raw_row[indexes[column]] for key, column in column_names.items()
@@ -231,7 +256,10 @@ def iter_raw_records(stream: BinaryIO, contract: dict[str, Any]):
             if uid in seen:
                 raise SourceError("duplicate_raw_uid")
             seen.add(uid)
-            yield {"source_row": source_row, "selected": selected}
+            record = {"source_row": source_row, "selected": selected}
+            if include_raw:
+                record["raw"] = dict(zip(header_columns, raw_row, strict=True))
+            yield record
     except UnicodeDecodeError as exc:
         raise SourceError("invalid_encoding") from exc
     except csv.Error as exc:
@@ -388,3 +416,46 @@ def _require_regular_file(path: Path) -> None:
         raise SourceError("missing_source_file") from exc
     if not stat.S_ISREG(mode):
         raise SourceError("source_not_regular_file")
+
+
+def portable_normalize_selected_record(
+    selected: dict[str, str],
+    *,
+    source_row: int,
+    source_month: str,
+    region_id: str,
+    boundary: Any,
+    selected_hash: str,
+) -> dict[str, Any]:
+    """Normalize an external k_2.1 row without legacy month/region identity.
+
+    The fixed research normalizer remains the single implementation of all
+    geometry, update-code, boundary, and classification behavior. This
+    portable wrapper validates a real YYYYMM month and changes only the
+    normalized record's month-local identity fields.
+    """
+    if (
+        not isinstance(source_month, str)
+        or not re.fullmatch(r"[0-9]{4}(0[1-9]|1[0-2])", source_month, re.ASCII)
+        or source_month[:4] == "0000"
+    ):
+        raise SourceError("invalid_source_month")
+    if not isinstance(region_id, str) or not region_id.strip():
+        raise SourceError("invalid_region_id")
+
+    # Run the frozen legacy behavior, then replace only the portable identity
+    # fields for normalized rows. The legacy public function is unchanged.
+    result = normalize_selected_record(
+        selected,
+        source_row=source_row,
+        source_month=SOURCE_MONTH,
+        region_id=region_id,
+        boundary=boundary,
+        selected_hash=selected_hash,
+    )
+    if result.get("classification") == "normalized":
+        record = result["record"]
+        uid = record["raw_uid"]
+        record["source_month"] = source_month
+        record["entity_id"] = f"{region_id}/{source_month}/{uid}"
+    return result

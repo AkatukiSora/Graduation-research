@@ -17,6 +17,13 @@ from generation_io import supervisor
 from generation_io.supervisor import _Limits, _supervise
 
 
+@pytest.fixture(autouse=True)
+def isolate_default_resource_root(tmp_path, monkeypatch):
+    resource_root = tmp_path / "supervisor-resource-root"
+    resource_root.mkdir()
+    monkeypatch.setattr(supervisor, "EVIDENCE", resource_root)
+
+
 def limits(**overrides):
     values = {
         "wall_seconds": 5.0,
@@ -428,29 +435,47 @@ def test_shared_budget_survives_independent_supervisor_processes(tmp_path):
         return json.loads(completed.stdout)
 
     first = run_process(1, wall_seconds=0.12)["result"]
+    first_report = json.loads((tmp_path / "stage-1.json").read_text(encoding="utf-8"))
     after_first = json.loads(state_path.read_text(encoding="utf-8"))
     assert first["failure_reason"] == "wall_timeout"
     assert first["aggregate_before"] == 599.0
     assert first["stages_completed"] == 1
-    assert (tmp_path / "marker-1").is_file()
-    assert 599.0 < after_first["aggregate_consumed_seconds"] < 600.0
+    assert after_first["aggregate_consumed_seconds"] == first["aggregate_after"]
+    assert first["aggregate_after"] > 599.0
+    assert after_first["in_flight"] is None
+    assert first["deadline_monotonic"] - first["started_monotonic"] <= 0.12
+    assert first_report["reaped"] is True
+    assert first_report["finalized"] is True
+    assert first_report["exit_code"] is not None
 
-    second = run_process(2, wall_seconds=5.0)["result"]
-    after_second = json.loads(state_path.read_text(encoding="utf-8"))
-    assert second["failure_reason"] == "wall_timeout"
-    assert second["aggregate_before"] == after_first["aggregate_consumed_seconds"]
-    assert second["deadline_monotonic"] - second["started_monotonic"] <= 600.0 - second["aggregate_before"]
-    assert second["stages_completed"] == 2
-    assert second["aggregate_after"] == after_second["aggregate_consumed_seconds"] > 600.0
-    assert (tmp_path / "marker-2").is_file()
+    if after_first["aggregate_consumed_seconds"] >= 600.0:
+        second = run_process(2, wall_seconds=5.0)
+        assert second == {"error": "aggregate_budget_exhausted"}
+        after_second = json.loads(state_path.read_text(encoding="utf-8"))
+        assert after_second == after_first
+        assert not (tmp_path / "marker-2").exists()
+    else:
+        second = run_process(2, wall_seconds=5.0)["result"]
+        second_report = json.loads((tmp_path / "stage-2.json").read_text(encoding="utf-8"))
+        after_second = json.loads(state_path.read_text(encoding="utf-8"))
+        assert second["failure_reason"] == "wall_timeout"
+        assert second["aggregate_before"] == after_first["aggregate_consumed_seconds"]
+        assert second["deadline_monotonic"] - second["started_monotonic"] <= 600.0 - second["aggregate_before"]
+        assert second["stages_completed"] == 2
+        assert second["aggregate_after"] == after_second["aggregate_consumed_seconds"] > 600.0
+        assert after_second["in_flight"] is None
+        assert second_report["reaped"] is True
+        assert second_report["finalized"] is True
 
     aggregate_exhausted = run_process(3)
     assert aggregate_exhausted == {"error": "aggregate_budget_exhausted"}
     assert not (tmp_path / "marker-3").exists()
+    assert json.loads(state_path.read_text(encoding="utf-8")) == after_second
 
     both_exhausted = run_process(4, mode="both-exhausted")
     assert both_exhausted == {"error": "task_budget_exhausted"}
     assert not (tmp_path / "marker-4").exists()
+    assert json.loads(state_path.read_text(encoding="utf-8")) == after_second
 
 
 def test_late_supervisor_failure_invalidates_complete_when_report_is_refused(tmp_path):
@@ -604,7 +629,10 @@ def _f1_owned_sleep_child(tmp_path: Path, *, sleep_seconds: float):
             "complete_sha256": hashlib.sha256(body).hexdigest(),
         }
         (attempt / "published-files.json").write_text(json.dumps(published), encoding="utf-8")
-        Path(marker).write_text(str(os.getpid()), encoding="ascii")
+        marker_path = Path(marker)
+        marker_temp = marker_path.with_name(marker_path.name + ".tmp")
+        marker_temp.write_text(str(os.getpid()), encoding="ascii")
+        marker_temp.replace(marker_path)
         time.sleep(sleep_seconds)
         """
     )

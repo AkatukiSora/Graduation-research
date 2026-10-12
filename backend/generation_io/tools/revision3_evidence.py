@@ -98,14 +98,14 @@ def _check_command(stage: str, report: dict[str, Any], attempt: Path) -> None:
     if stage == "tests":
         valid = command == [python, "-B", "-m", "pytest", "-p", "no:cacheprovider", "tests", "-q"] and report.get("output_path") is None
     elif stage == "generate":
-        prefix = [python, "-B", "-m", "generation_io", "generate", "--source", "/opt/data/workspaces/graduation-research-evidence/unified-work/G01/fixtures/selected-fields.jsonl", "--source-contract", "/opt/data/workspaces/graduation-research-evidence/unified-work/G01/fixtures/fixture-manifest.json", "--input-kind", "selected_projection", "--boundary", str(base.PACKAGE / "tests/fixtures/region-a.geojson"), "--region-id", "fixture:region-a", "--output", str(base.EVIDENCE / "selected-projection-01")]
+        prefix = [python, "-B", "-m", "generation_io", "legacy-generate", "--source", "/opt/data/workspaces/graduation-research-evidence/unified-work/G01/fixtures/selected-fields.jsonl", "--source-contract", "/opt/data/workspaces/graduation-research-evidence/unified-work/G01/fixtures/fixture-manifest.json", "--input-kind", "selected_projection", "--boundary", str(base.PACKAGE / "tests/fixtures/region-a.geojson"), "--region-id", "fixture:region-a", "--output", str(base.EVIDENCE / "selected-projection-01")]
         valid = len(command) == len(prefix) + 4 and command[:len(prefix)] == prefix
         if valid:
             suffix = command[len(prefix):]
             valid = suffix[0] == "--ownership-receipt" and Path(suffix[1]) == attempt / "ownership.json" and suffix[2] == "--invocation-id" and bool(suffix[3]) and report.get("invocation_id") == suffix[3]
         valid = valid and report.get("output_path") == str(base.EVIDENCE / "selected-projection-01")
     else:
-        valid = command == [python, "-B", "-m", "generation_io", "verify", "--manifest", str(base.EVIDENCE / "selected-projection-01/generation-manifest.json")] and report.get("output_path") == str(base.EVIDENCE / "selected-projection-01")
+        valid = command == [python, "-B", "-m", "generation_io", "legacy-verify", "--manifest", str(base.EVIDENCE / "selected-projection-01/generation-manifest.json")] and report.get("output_path") == str(base.EVIDENCE / "selected-projection-01")
     if not valid:
         _fail("stage_command_contract_mismatch")
 

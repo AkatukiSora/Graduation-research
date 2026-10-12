@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "source.csv",
+    "bytes": 3292,
+    "sha256": "af38056baba90b0c01508eec3b6f96f02af9d1f2cd01ea7bb4a207ae5d922180",
+    "crc32": "533cdbb4",
+    "source_month": "202701",
+    "format_version": "k_2.1",
+    "encoding": "cp932",
+    "header_sha256": "74334997340bd11605f3cb3edbc8cea93782df73af3cdc2492b9c48cb6825ca1"
+  },
+  "boundary": {
+    "path": "boundary.geojson",
+    "bytes": 157,
+    "sha256": "7330f575420f269d278bfb0ee577f5907ee1986b44aeafdc73483edf5f328eb4",
+    "crs": "EPSG:4326",
+    "region_id": "synthetic:rectangle"
+  },
+  "provenance": {
+    "dataset": "synthetic",
+    "publisher": "unknown",
+    "edition": "synthetic-v1",
+    "retrieved_at": "unknown",
+    "terms_reference": "unknown",
+    "rights_status": "unknown"
+  },
+  "synthetic": true,
+  "production_approved": false
+}
