@@ -444,7 +444,7 @@ def test_shared_budget_survives_independent_supervisor_processes(tmp_path):
     assert after_first["aggregate_consumed_seconds"] == first["aggregate_after"]
     assert first["aggregate_after"] > 599.0
     assert after_first["in_flight"] is None
-    assert first["deadline_monotonic"] - first["started_monotonic"] <= 0.12
+    assert first["deadline_monotonic"] <= first["started_monotonic"] + 0.12
     assert first_report["reaped"] is True
     assert first_report["finalized"] is True
     assert first_report["exit_code"] is not None
@@ -461,7 +461,7 @@ def test_shared_budget_survives_independent_supervisor_processes(tmp_path):
         after_second = json.loads(state_path.read_text(encoding="utf-8"))
         assert second["failure_reason"] == "wall_timeout"
         assert second["aggregate_before"] == after_first["aggregate_consumed_seconds"]
-        assert second["deadline_monotonic"] - second["started_monotonic"] <= 600.0 - second["aggregate_before"]
+        assert second["deadline_monotonic"] <= second["started_monotonic"] + (600.0 - second["aggregate_before"])
         assert second["stages_completed"] == 2
         assert second["aggregate_after"] == after_second["aggregate_consumed_seconds"] > 600.0
         assert after_second["in_flight"] is None
