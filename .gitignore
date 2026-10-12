@@ -3,3 +3,11 @@ backend/infra/**/*.tfstate
 backend/infra/**/*.tfstate.*
 backend/infra/**/*.tfplan
 backend/infra/**/crash.log
+
+# Local-only generation_io artifacts and Python test caches.
+/backend/generation_io/data/
+/backend/generation_io/outputs/
+/backend/generation_io/state/
+/backend/generation_io/.venv/
+/backend/generation_io/.pytest_cache/
+/backend/generation_io/**/__pycache__/

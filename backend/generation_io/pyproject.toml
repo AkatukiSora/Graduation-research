@@ -1,0 +1,17 @@
+[project]
+name = "graduation-generation-io"
+version = "0.1.0"
+description = "Candidate-only graduation research generation I/O"
+requires-python = "==3.13.5"
+dependencies = [
+  "numpy>=2.3,<2.4",
+  "pandas>=2.3,<2.4",
+  "scipy>=1.16,<1.17",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
