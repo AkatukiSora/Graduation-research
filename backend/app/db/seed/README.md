@@ -70,19 +70,31 @@ uv run --locked python ../app/db/seed/synthetic/build_dataset.py --check   # 再
 uv run --locked python ../app/db/seed/synthetic/build_dataset.py --write   # チェックイン済みファイルを更新
 ```
 
+## API が参照するデータセット
+
+API（`cmd/api`）は起動時にデータベースへ接続して疎通を確認し、設定 `STOP_POINT_DATASET_ID` で指定した 1 つのデータセットの地点だけを返します。未設定のときは `synthetic-v1` を使います。実データを投入した後は、本番の環境で明示的にデータセット ID を設定してください。値が空、または小文字英数字と `.` `_` `-`（先頭は英数字、64 文字以内）以外を含む場合は起動に失敗します。
+
+- 仮データの地点は方位が不明なので、`az` は `null`、`directionStatus` と `validityStatus` は `unknown`、`synthetic` は `true`、`notificationEligible` は `false` で返ります。候補方位（`regulation_candidates`）は API に出力されません。
+- `notificationEligible` は保存値ではなく、データセットが本番承認済みで合成でなく、方位が `confirmed` かつ地点が `valid` のときだけ `true` になります。
+- データベースに接続できないときは、`/api/v1/health` が 503（`{"status":"degraded","database":"unavailable"}`）、地点の取得が 503（`error.code` は `database_unavailable`）を返します。
+- IAM 認証の場合は、新しい接続を開くたびに認証トークンを作り直します。`DB_PASSWORD` を設定した場合は固定のパスワードを使い、AWS には問い合わせません。
+
 ## テスト
 
 ```sh
 cd backend/app
 go test ./...
 python3 db/seed/tests/run_integration.py --toolchain-report <toolchain-report.json>
+python3 internal/handler/tests/check_openapi.py --toolchain-report <toolchain-report.json>
 ```
 
-後者は使い捨てのローカル PostGIS クラスタを作成し、全マイグレーションを適用して `internal/seed` の統合テスト（初回投入、再投入の no-op、ダイジェスト不一致の拒否、不正データ、ロールバック、並行投入、件数照合）と `cmd/seed` の実行ファイルでの投入を検証し、終了時にクラスタを停止・削除します。統合テストは `TEST_DATABASE_URL` が未設定ならスキップされ、ホストがループバックまたはローカルのソケット以外の場合は実行を拒否します。
+後者は使い捨てのローカル PostGIS クラスタを作成し、全マイグレーションを適用して `internal/seed` の統合テスト（初回投入、再投入の no-op、ダイジェスト不一致の拒否、不正データ、ロールバック、並行投入、件数照合）と `cmd/seed` の実行ファイルでの投入を検証します。続けて、投入済みのデータに対する API のリポジトリ（半径検索と並び順、境界、方位不明の表示、ID 検索、他データセットの分離、DB 障害の扱い）と、接続ごとのパスワード解決を検証し、終了時にクラスタを停止・削除します。統合テストは `TEST_DATABASE_URL` が未設定ならスキップされ、ホストがループバックまたはローカルのソケット以外の場合は実行を拒否します。
+
+`check_openapi.py` は、ハンドラが実際に返す JSON と `backend/docs/openapi.yaml` のプロパティ・必須項目・エラーコードの一致を確認します（データベースは不要で、PyYAML または ruamel.yaml が必要です）。
 
 ## 検証済みの範囲と未検証の範囲
 
-- 検証済み：Go の単体テスト、`--validate-only`、使い捨てのローカル PostgreSQL／PostGIS に対する統合テストと `cmd/seed` 実行ファイルでの投入・再投入。
-- 未検証：コンテナイメージ（`/seed`）の実ビルド、AWS／RDS（IAM 認証）上での投入、GitHub Actions での実行。
+- 検証済み：Go の単体テスト、`--validate-only`、使い捨てのローカル PostgreSQL／PostGIS に対する統合テスト（投入・再投入、API のリポジトリ、接続ごとのパスワード解決）と `cmd/seed` 実行ファイルでの投入・再投入、OpenAPI とハンドラ出力の一致。
+- 未検証：コンテナイメージ（`/api`、`/seed`）の実ビルド、AWS／RDS（IAM 認証）上での投入と実際のトークン発行、Lambda 上での `cmd/api` の起動、GitHub Actions での実行。
 - `run_integration.py` の `--toolchain-report` は、PostgreSQL 17 と PostGIS を展開したディレクトリ（`postgres/root`）と同じ場所に置く、ツールチェーンの記録ファイル（JSON）です。リポジトリだけでは再現できず、同等の使い捨て環境を用意する必要があります。
 - `build_dataset.py --check` が全体でバイト一致するのは、`uv.lock` で固定した環境で実行した場合です。マニフェストには実行時のライブラリ版が記録されるため、別の環境では `dataset.json` のダイジェストだけが一致します。

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Run the seed integration tests against a disposable local PostGIS.
+"""Run the seed and API repository integration tests against a disposable PostGIS.
 
 The script starts a fresh PostgreSQL cluster from the toolchain described by the
 report file, applies every migration in ``db/migrations``, runs the Go
-integration tests with ``TEST_DATABASE_URL`` pointing at the cluster's Unix
+seed integration tests with ``TEST_DATABASE_URL`` pointing at the cluster's Unix
 socket, then exercises the real ``cmd/seed`` binary over loopback TCP (apply,
-replay, unknown dataset). The cluster is always stopped and removed. The script
-never reads application configuration and never contacts a remote database.
+replay, unknown dataset) and finally runs the integration tests of the
+PostgreSQL stop point repository against the seeded dataset and the connection
+pool's per-connection password resolution over loopback TCP. The cluster is
+always stopped and removed. The script never reads application configuration and
+never contacts a remote database.
 """
 import argparse
 import importlib.util
@@ -116,6 +119,31 @@ def main():
                                 " WHERE dataset_id='synthetic-v1'")
         assert counts == "1,12,58", counts
         assert flags == "true,false", flags
+
+        # The API repository reads the dataset the CLI just applied.
+        repo_tests = run([go, "test", "./internal/repository/postgres/...", "-run", "Integration", "-count=1", "-v"],
+                         dict(env, TEST_DATABASE_URL=url))
+        if args.log:
+            with args.log.open("a") as log:
+                log.write(repo_tests.stdout + repo_tests.stderr)
+        assert repo_tests.returncode == 0, repo_tests.stdout + repo_tests.stderr
+        repo_passed = [l for l in repo_tests.stdout.splitlines() if l.startswith("--- PASS: TestIntegration")]
+        repo_skipped = [l for l in repo_tests.stdout.splitlines() if l.startswith("--- SKIP")]
+        assert len(repo_passed) >= 8 and not repo_skipped, repo_tests.stdout
+        summary["repository_integration_tests_passed"] = len(repo_passed)
+
+        # A real pool must resolve the password for each new connection.
+        tcp_url = f"postgresql://validator@127.0.0.1:{db.port}/gr9_dev?sslmode=disable"
+        pool_tests = run([go, "test", "./internal/db/...", "-run", "Integration", "-count=1", "-v"],
+                         dict(env, TEST_DATABASE_TCP_URL=tcp_url))
+        if args.log:
+            with args.log.open("a") as log:
+                log.write(pool_tests.stdout + pool_tests.stderr)
+        assert pool_tests.returncode == 0, pool_tests.stdout + pool_tests.stderr
+        pool_passed = [l for l in pool_tests.stdout.splitlines() if l.startswith("--- PASS: TestIntegration")]
+        pool_skipped = [l for l in pool_tests.stdout.splitlines() if l.startswith("--- SKIP")]
+        assert len(pool_passed) >= 1 and not pool_skipped, pool_tests.stdout
+        summary["pool_integration_tests_passed"] = len(pool_passed)
         summary.update(cli_apply=json.loads(first.stdout), cli_replay=json.loads(replay.stdout),
                        cli_counts_datasets_points_candidates=counts, cli_flags_synthetic_production=flags)
         summary["passed"] = True

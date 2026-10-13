@@ -5,6 +5,10 @@ info:
   description: >
     自転車利用者向けに、一時停止警告対象地点 (StopPoint) を返す取得専用 API。
     現時点では StopPoint の ID検索と範囲検索のみを扱う。
+    地点は PostgreSQL (PostGIS) に投入された規制データセットのうち、
+    設定 STOP_POINT_DATASET_ID で指定した 1 つの版だけから返す。
+    方位 (az) が不明な地点は az を null で返し、directionStatus / validityStatus /
+    synthetic / productionApproved / notificationEligible で確実性を明示する。
 servers:
   - url: https://api.example.com
 tags:
@@ -18,9 +22,10 @@ paths:
       tags: [health]
       operationId: getHealth
       summary: Health check
+      description: データベースへの疎通を確認して結果を返す。
       responses:
         "200":
-          description: Service is healthy
+          description: Service and database are available
           content:
             application/json:
               schema:
@@ -29,14 +34,28 @@ paths:
                 ok:
                   value:
                     status: ok
-                    version: v1
+                    database: ok
+        "503":
+          description: Database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                degraded:
+                  value:
+                    status: degraded
+                    database: unavailable
 
   /api/v1/stop-points:
     get:
       tags: [stop-points]
       operationId: getStopPointsByRange
       summary: Get stop points by range
-      description: 中心座標と検索半径を指定して StopPoint を取得する。
+      description: >
+        中心座標と検索半径を指定して StopPoint を取得する。
+        中心に近い順に返し、距離が等しい地点は内部の識別子順に並べる。
+        そのため同じ条件では結果の順序と limit での切り取りが一定になる。
       parameters:
         - $ref: "#/components/parameters/Lat"
         - $ref: "#/components/parameters/Long"
@@ -50,30 +69,63 @@ paths:
               schema:
                 $ref: "#/components/schemas/StopPointRangeResponse"
               examples:
-                sample:
+                syntheticUnknownDirection:
+                  summary: 仮データの地点。方位は不明で通知対象ではない。
                   value:
-                    - uniqueKey: "1"
-                      az: "197"
-                      lat: "35.0700971"
-                      long: "136.8764412"
+                    - uniqueKey: "SYNTHETIC00000000000000000000001"
+                      az: null
+                      lat: "1"
+                      long: "1"
+                      directionStatus: unknown
+                      validityStatus: unknown
+                      synthetic: true
+                      productionApproved: false
+                      datasetId: synthetic-v1
+                      sourceMonth: "202701"
+                      notificationEligible: false
         "400":
           description: Invalid query
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid:
+                  value:
+                    error:
+                      code: invalid_request
+                      message: lat is required
         "500":
           description: Internal error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                internal:
+                  value:
+                    error:
+                      code: internal_error
+                      message: Internal Server Error
+        "503":
+          description: Database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    error:
+                      code: database_unavailable
+                      message: database is temporarily unavailable
 
   /api/v1/stop-points/{id}:
     get:
       tags: [stop-points]
       operationId: getStopPointById
       summary: Get stop point by ID
+      description: raw_uid (uniqueKey) で 1 件取得する。created_at / updated_at は保存されている値。
       parameters:
         - $ref: "#/components/parameters/StopPointId"
       responses:
@@ -84,26 +136,57 @@ paths:
               schema:
                 $ref: "#/components/schemas/StopPointDetailResponse"
               examples:
-                sample:
+                syntheticUnknownDirection:
                   value:
-                    uniqueKey: "1"
-                    az: "197"
-                    lat: "35.0700971"
-                    long: "136.8764412"
-                    created_at: "2026-01-01T00:00:00Z"
-                    updated_at: "2026-01-02T00:00:00Z"
+                    uniqueKey: "SYNTHETIC00000000000000000000001"
+                    az: null
+                    lat: "1"
+                    long: "1"
+                    directionStatus: unknown
+                    validityStatus: unknown
+                    synthetic: true
+                    productionApproved: false
+                    datasetId: synthetic-v1
+                    sourceMonth: "202701"
+                    notificationEligible: false
+                    created_at: "2026-10-13T01:02:03.456789Z"
+                    updated_at: "2026-10-13T01:02:03.456789Z"
         "404":
           description: Stop point not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notFound:
+                  value:
+                    error:
+                      code: not_found
+                      message: stop point not found
         "500":
           description: Internal error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                internal:
+                  value:
+                    error:
+                      code: internal_error
+                      message: Internal Server Error
+        "503":
+          description: Database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    error:
+                      code: database_unavailable
+                      message: database is temporarily unavailable
 
 components:
   parameters:
@@ -151,7 +234,7 @@ components:
       name: id
       in: path
       required: true
-      description: StopPoint の識別子。
+      description: StopPoint の識別子 (uniqueKey)。
       schema:
         type: string
 
@@ -160,15 +243,16 @@ components:
       type: object
       required:
         - status
-        - version
+        - database
       properties:
         status:
           type: string
-          enum: [ok]
+          enum: [ok, degraded]
           example: ok
-        version:
+        database:
           type: string
-          example: v1
+          enum: [ok, unavailable]
+          example: ok
 
     StopPointRangeResponseItem:
       type: object
@@ -177,19 +261,63 @@ components:
         - az
         - lat
         - long
+        - directionStatus
+        - validityStatus
+        - synthetic
+        - productionApproved
+        - datasetId
+        - sourceMonth
+        - notificationEligible
       properties:
         uniqueKey:
           type: string
-          example: "1"
+          example: "SYNTHETIC00000000000000000000001"
         az:
           type: string
-          example: "197"
+          nullable: true
+          description: >
+            方位 (度、10進数の文字列)。方位が不明な地点では null。
+            隣接地点への候補方位はここに入らない。
+          example: null
         lat:
           type: string
-          example: "35.0700971"
+          example: "1"
         long:
           type: string
-          example: "136.8764412"
+          example: "1"
+        directionStatus:
+          type: string
+          enum: [unknown, inferred, confirmed]
+          description: az の確からしさ。unknown のとき az は null。
+          example: unknown
+        validityStatus:
+          type: string
+          enum: [unknown, valid, invalid]
+          description: 地点自体の有効性の確認状態。
+          example: unknown
+        synthetic:
+          type: boolean
+          description: 合成された仮データの地点かどうか。
+          example: true
+        productionApproved:
+          type: boolean
+          description: データセットが本番利用として承認されているかどうか。
+          example: false
+        datasetId:
+          type: string
+          description: 地点を含むデータセットの版。
+          example: synthetic-v1
+        sourceMonth:
+          type: string
+          description: データセットの元データの年月 (YYYYMM)。
+          example: "202701"
+        notificationEligible:
+          type: boolean
+          description: >
+            通知に使ってよい地点かどうか。保存値ではなく導出値で、
+            データセットが本番承認済みかつ合成でなく、directionStatus が confirmed、
+            validityStatus が valid のときだけ true。
+          example: false
 
     StopPointRangeResponse:
       type: array
@@ -207,11 +335,11 @@ components:
             created_at:
               type: string
               format: date-time
-              example: "2026-01-01T00:00:00Z"
+              example: "2026-10-13T01:02:03.456789Z"
             updated_at:
               type: string
               format: date-time
-              example: "2026-01-02T00:00:00Z"
+              example: "2026-10-13T01:02:03.456789Z"
 
     ErrorResponse:
       type: object
@@ -230,8 +358,9 @@ components:
         code:
           type: string
           enum:
-            - INVALID_QUERY
-            - STOP_POINT_NOT_FOUND
-            - INTERNAL_ERROR
+            - invalid_request
+            - not_found
+            - database_unavailable
+            - internal_error
         message:
           type: string

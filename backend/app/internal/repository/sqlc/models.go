@@ -8,6 +8,42 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type RegulationCandidate struct {
+	DatasetID          string
+	SourceEntityID     string
+	NeighborEntityID   string
+	Rank               int32
+	DistanceM          float64
+	CandidateBearing   float64
+	Features           []byte
+	BearingSemantics   string
+	ProductionApproved bool
+}
+
+type RegulationDataset struct {
+	DatasetID          string
+	ContentSha256      string
+	SourceMonth        string
+	RegionID           string
+	Synthetic          bool
+	ProductionApproved bool
+	Provenance         []byte
+	CreatedAt          pgtype.Timestamptz
+}
+
+type RegulationPoint struct {
+	DatasetID           string
+	EntityID            string
+	RawUid              string
+	Geom                interface{}
+	DirectionDegrees    pgtype.Float8
+	DirectionStatus     string
+	ValidityStatus      string
+	NormalizationStatus string
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+}
+
 type StopSign struct {
 	ID       int32
 	JarticID pgtype.Text
