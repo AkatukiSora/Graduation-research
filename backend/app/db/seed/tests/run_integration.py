@@ -44,11 +44,26 @@ def run(argv, env, cwd=APP_DIR, timeout=600):
     return subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
 
-def allow_loopback_trust(cluster):
+def allow_loopback_trust(cluster, database="gr9_dev"):
     """Let the disposable cluster accept its own loopback connections."""
     hba = cluster.data / "pg_hba.conf"
-    hba.write_text("host gr9_dev validator 127.0.0.1/32 trust\n" + hba.read_text())
+    hba.write_text(f"host {database} validator 127.0.0.1/32 trust\n" + hba.read_text())
     cluster.run("pg_ctl", "-D", cluster.data, "reload")
+
+
+def migrate_cli(binary, cluster, database, atlas, seed_ids):
+    """Run the real migrate binary (Atlas apply, then the optional seed step)."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "DB_HOST": "127.0.0.1", "DB_PORT": str(cluster.port), "DB_NAME": database,
+        "DB_USER": "validator", "DB_PASSWORD": "disposable-cluster-uses-trust-auth",
+        "DB_IAM_AUTH": "false", "DB_SSL_MODE": "disable",
+        "ATLAS_BINARY_PATH": atlas,
+        "ATLAS_MIGRATION_DIR": f"file://{APP_DIR / 'db' / 'migrations'}",
+    }
+    if seed_ids is not None:
+        env["SEED_DATASET_IDS"] = seed_ids
+    return run([str(binary)], env, timeout=180)
 
 
 def psql_scalar(cluster, statement):
@@ -146,6 +161,40 @@ def main():
         summary["pool_integration_tests_passed"] = len(pool_passed)
         summary.update(cli_apply=json.loads(first.stdout), cli_replay=json.loads(replay.stdout),
                        cli_counts_datasets_points_candidates=counts, cli_flags_synthetic_production=flags)
+
+        # The deployed path: migrate applies the schema to an empty database
+        # and then seeds the datasets named in SEED_DATASET_IDS.
+        migrate_binary = Path(scratch) / "migrate"
+        built = run([go, "build", "-o", str(migrate_binary), "./cmd/migrate"], env)
+        assert built.returncode == 0, built.stderr
+        atlas = report["atlas_binary"]
+        for database in ("gr9_migrate_only", "gr9_migrate_seed", "gr9_migrate_bad"):
+            created = db.sql(f"CREATE DATABASE {database}", database="postgres")
+            assert created.returncode == 0, created.stderr
+            allow_loopback_trust(db, database)
+
+        def table_count(database, table):
+            result = db.sql(f"SELECT count(*) FROM {table}", database=database)
+            return result.stdout.strip() if result.returncode == 0 else "missing"
+
+        plain = migrate_cli(migrate_binary, db, "gr9_migrate_only", atlas, None)
+        assert plain.returncode == 0, plain.stdout + plain.stderr
+        assert table_count("gr9_migrate_only", "regulation_datasets") == "0", "schema applied, nothing seeded"
+
+        seeded = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, SEED_CLI_DATASET)
+        assert seeded.returncode == 0 and '"status":"inserted"' in seeded.stdout, seeded.stdout + seeded.stderr
+        again = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, SEED_CLI_DATASET)
+        assert again.returncode == 0 and '"status":"unchanged"' in again.stdout, again.stdout + again.stderr
+        assert table_count("gr9_migrate_seed", "regulation_points") == "12"
+        assert table_count("gr9_migrate_seed", "regulation_candidates") == "58"
+
+        # An unknown dataset id must fail the run and leave the data tables empty.
+        bad = migrate_cli(migrate_binary, db, "gr9_migrate_bad", atlas, SEED_CLI_DATASET + ",missing-dataset")
+        assert bad.returncode == 1, bad.stdout + bad.stderr
+        assert table_count("gr9_migrate_bad", "regulation_points") == "0", "validation must precede any write"
+        summary.update(migrate_schema_only="ok", migrate_seed_inserted=json.loads(seeded.stdout.strip().splitlines()[-1]),
+                       migrate_seed_replay=json.loads(again.stdout.strip().splitlines()[-1]),
+                       migrate_unknown_dataset_rejected_without_writes=True)
         summary["passed"] = True
     finally:
         summary["database_stopped"] = db.stop()

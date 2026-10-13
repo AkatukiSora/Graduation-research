@@ -12,6 +12,7 @@ import (
 
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/config"
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/db"
+	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/seeddata"
 )
 
 const (
@@ -80,6 +81,11 @@ func runOnce(ctx context.Context) error {
 		return err
 	}
 
+	seedIDs, err := parseSeedDatasetIDs(os.Getenv(seedDatasetsEnv))
+	if err != nil {
+		return err
+	}
+
 	cmd := exec.CommandContext(
 		ctx,
 		cfg.DB.AtlasBinaryPath,
@@ -98,7 +104,7 @@ func runOnce(ctx context.Context) error {
 		return fmt.Errorf("run atlas migrate apply: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 
-	return nil
+	return runSeed(ctx, pool, seeddata.FS(), seedIDs, os.Stdout)
 }
 
 func fail(err error) {
