@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -10,8 +11,16 @@ import (
 
 type Config struct {
 	AWSRegion string
-	DB        DBConfig
+	// StopPointDatasetID selects the single regulation dataset version the API
+	// serves. It defaults to the provisional synthetic dataset; production must
+	// set it explicitly once real datasets exist.
+	StopPointDatasetID string
+	DB                 DBConfig
 }
+
+const defaultStopPointDatasetID = "synthetic-v1"
+
+var stopPointDatasetIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 type DBConfig struct {
 	Host               string
@@ -61,8 +70,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	datasetID, err := stopPointDatasetIDFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
-		AWSRegion: getenvDefault("AWS_REGION", "ap-northeast-3"),
+		AWSRegion:          getenvDefault("AWS_REGION", "ap-northeast-3"),
+		StopPointDatasetID: datasetID,
 		DB: DBConfig{
 			Host:               strings.TrimSpace(os.Getenv("DB_HOST")),
 			Port:               port,
@@ -98,6 +113,26 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// stopPointDatasetIDFromEnv returns the dataset version served by the API. An
+// unset variable selects the provisional default; a blank or malformed value is
+// an error so that a misconfiguration never silently serves another dataset.
+func stopPointDatasetIDFromEnv() (string, error) {
+	value, present := os.LookupEnv("STOP_POINT_DATASET_ID")
+	if !present {
+		return defaultStopPointDatasetID, nil
+	}
+
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("STOP_POINT_DATASET_ID must not be empty")
+	}
+	if !stopPointDatasetIDPattern.MatchString(value) {
+		return "", fmt.Errorf("STOP_POINT_DATASET_ID must match %s", stopPointDatasetIDPattern.String())
+	}
+
+	return value, nil
 }
 
 func getenvDefault(key string, fallback string) string {

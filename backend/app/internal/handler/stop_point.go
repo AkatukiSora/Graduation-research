@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -17,22 +19,35 @@ const (
 	maxStopPointSearchLimit     = 500
 )
 
+// Machine-readable error codes. The message keeps its previous wording.
+const (
+	errorCodeInvalidRequest      = "invalid_request"
+	errorCodeNotFound            = "not_found"
+	errorCodeDatabaseUnavailable = "database_unavailable"
+	errorCodeInternal            = "internal_error"
+)
+
 type StopPointHandlers struct {
 	service *service.StopPointService
 }
 
+// stopPointRangeResponse is one list item. az is null while the direction is unknown.
 type stopPointRangeResponse struct {
-	UniqueKey string `json:"uniqueKey"`
-	AZ        string `json:"az"`
-	Latitude  string `json:"lat"`
-	Longitude string `json:"long"`
+	UniqueKey            string  `json:"uniqueKey"`
+	AZ                   *string `json:"az"`
+	Latitude             string  `json:"lat"`
+	Longitude            string  `json:"long"`
+	DirectionStatus      string  `json:"directionStatus"`
+	ValidityStatus       string  `json:"validityStatus"`
+	Synthetic            bool    `json:"synthetic"`
+	ProductionApproved   bool    `json:"productionApproved"`
+	DatasetID            string  `json:"datasetId"`
+	SourceMonth          string  `json:"sourceMonth"`
+	NotificationEligible bool    `json:"notificationEligible"`
 }
 
 type stopPointDetailResponse struct {
-	UniqueKey string `json:"uniqueKey"`
-	AZ        string `json:"az"`
-	Latitude  string `json:"lat"`
-	Longitude string `json:"long"`
+	stopPointRangeResponse
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -44,17 +59,17 @@ func NewStopPointHandlers(service *service.StopPointService) *StopPointHandlers 
 func (h *StopPointHandlers) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		writeJSONError(w, http.StatusBadRequest, "id is required")
+		writeJSONError(w, http.StatusBadRequest, errorCodeInvalidRequest, "id is required")
 		return
 	}
 
 	stopPoint, found, err := h.service.GetByID(r.Context(), domain.GetStopPointByIDInput{ID: id})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		writeServiceError(w, err)
 		return
 	}
 	if !found {
-		writeJSONError(w, http.StatusNotFound, "stop point not found")
+		writeJSONError(w, http.StatusNotFound, errorCodeNotFound, "stop point not found")
 		return
 	}
 
@@ -64,13 +79,13 @@ func (h *StopPointHandlers) GetByID(w http.ResponseWriter, r *http.Request) {
 func (h *StopPointHandlers) GetByRange(w http.ResponseWriter, r *http.Request) {
 	input, err := parseGetByRangeInput(r)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		writeJSONError(w, http.StatusBadRequest, errorCodeInvalidRequest, err.Error())
 		return
 	}
 
 	stopPoints, err := h.service.GetByRange(r.Context(), input)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		writeServiceError(w, err)
 		return
 	}
 
@@ -91,7 +106,7 @@ func parseGetByRangeInput(r *http.Request) (domain.GetStopPointsByRangeInput, er
 	}
 
 	latitude, err := strconv.ParseFloat(latitudeRaw, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(latitude) {
 		return domain.GetStopPointsByRangeInput{}, fmt.Errorf("lat must be a number")
 	}
 	if latitude < -90 || latitude > 90 {
@@ -104,7 +119,7 @@ func parseGetByRangeInput(r *http.Request) (domain.GetStopPointsByRangeInput, er
 	}
 
 	longitude, err := strconv.ParseFloat(longitudeRaw, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(longitude) {
 		return domain.GetStopPointsByRangeInput{}, fmt.Errorf("long must be a number")
 	}
 	if longitude < -180 || longitude > 180 {
@@ -147,23 +162,45 @@ func parseGetByRangeInput(r *http.Request) (domain.GetStopPointsByRangeInput, er
 }
 
 func toStopPointRangeResponse(stopPoint domain.StopPoint) stopPointRangeResponse {
+	var az *string
+	if stopPoint.AZ != nil {
+		formatted := strconv.FormatFloat(*stopPoint.AZ, 'f', -1, 64)
+		az = &formatted
+	}
+
 	return stopPointRangeResponse{
-		UniqueKey: stopPoint.UniqueKey,
-		AZ:        stopPoint.AZ,
-		Latitude:  strconv.FormatFloat(stopPoint.Latitude, 'f', -1, 64),
-		Longitude: strconv.FormatFloat(stopPoint.Longitude, 'f', -1, 64),
+		UniqueKey:            stopPoint.UniqueKey,
+		AZ:                   az,
+		Latitude:             strconv.FormatFloat(stopPoint.Latitude, 'f', -1, 64),
+		Longitude:            strconv.FormatFloat(stopPoint.Longitude, 'f', -1, 64),
+		DirectionStatus:      stopPoint.DirectionStatus,
+		ValidityStatus:       stopPoint.ValidityStatus,
+		Synthetic:            stopPoint.Synthetic,
+		ProductionApproved:   stopPoint.ProductionApproved,
+		DatasetID:            stopPoint.DatasetID,
+		SourceMonth:          stopPoint.SourceMonth,
+		NotificationEligible: stopPoint.NotificationEligible(),
 	}
 }
 
 func toStopPointDetailResponse(stopPoint domain.StopPointDetail) stopPointDetailResponse {
 	return stopPointDetailResponse{
-		UniqueKey: stopPoint.UniqueKey,
-		AZ:        stopPoint.AZ,
-		Latitude:  strconv.FormatFloat(stopPoint.Latitude, 'f', -1, 64),
-		Longitude: strconv.FormatFloat(stopPoint.Longitude, 'f', -1, 64),
-		CreatedAt: stopPoint.CreatedAt,
-		UpdatedAt: stopPoint.UpdatedAt,
+		stopPointRangeResponse: toStopPointRangeResponse(stopPoint.StopPoint),
+		CreatedAt:              stopPoint.CreatedAt,
+		UpdatedAt:              stopPoint.UpdatedAt,
 	}
+}
+
+// writeServiceError maps a repository failure to a response. Database
+// availability failures become 503; everything else is a generic 500. The
+// underlying error text is never sent to the client.
+func writeServiceError(w http.ResponseWriter, err error) {
+	if errors.Is(err, domain.ErrDatabaseUnavailable) {
+		writeJSONError(w, http.StatusServiceUnavailable, errorCodeDatabaseUnavailable, "database is temporarily unavailable")
+		return
+	}
+
+	writeJSONError(w, http.StatusInternalServerError, errorCodeInternal, http.StatusText(http.StatusInternalServerError))
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {
@@ -174,9 +211,10 @@ func writeJSON(w http.ResponseWriter, statusCode int, value any) {
 	}
 }
 
-func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
+func writeJSONError(w http.ResponseWriter, statusCode int, code string, message string) {
 	writeJSON(w, statusCode, map[string]any{
 		"error": map[string]string{
+			"code":    code,
 			"message": message,
 		},
 	})
