@@ -1,0 +1,367 @@
+package seed
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// datasetVariant returns an independent copy of the embedded dataset under a
+// new identifier with its own digest.
+func datasetVariant(t *testing.T, id string) *Bundle {
+	t.Helper()
+	b := cloneBundle(t, loadEmbedded(t))
+	sum := sha256.Sum256([]byte("variant:" + id))
+	digest := hex.EncodeToString(sum[:])
+	b.ContentSHA256, b.Manifest.ContentSHA256 = digest, digest
+	b.Manifest.DatasetID, b.Dataset.DatasetID = id, id
+	if err := Validate(b); err != nil {
+		t.Fatalf("variant must be valid: %v", err)
+	}
+	return b
+}
+
+type rowCounts struct{ datasets, points, candidates int }
+
+func countsFor(t *testing.T, pool *pgxpool.Pool, id string) rowCounts {
+	t.Helper()
+	var c rowCounts
+	ctx := context.Background()
+	for query, dest := range map[string]*int{
+		"SELECT count(*) FROM regulation_datasets WHERE dataset_id = $1":   &c.datasets,
+		"SELECT count(*) FROM regulation_points WHERE dataset_id = $1":     &c.points,
+		"SELECT count(*) FROM regulation_candidates WHERE dataset_id = $1": &c.candidates,
+	} {
+		if err := pool.QueryRow(ctx, query, id).Scan(dest); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+	}
+	return c
+}
+
+func legacyCount(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM stop_signs").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// cleanup removes only the rows of datasets this test created.
+func cleanup(t *testing.T, pool *pgxpool.Pool, ids ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, id := range ids {
+			for _, table := range []string{"regulation_candidates", "regulation_points", "regulation_datasets"} {
+				if _, err := pool.Exec(ctx, "DELETE FROM "+table+" WHERE dataset_id = $1", id); err != nil {
+					t.Logf("cleanup %s %s: %v", table, id, err)
+				}
+			}
+		}
+	})
+}
+
+func TestIntegrationApplyInsertsAndReplaysAsNoop(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-apply")
+	cleanup(t, pool, id)
+	b := datasetVariant(t, id)
+	legacyBefore := legacyCount(t, pool)
+
+	res, err := Apply(ctx, pool, b)
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if res.Status != StatusInserted || res.Points != 12 || res.Candidates != len(b.Dataset.Candidates) {
+		t.Fatalf("first apply result = %+v", res)
+	}
+	want := rowCounts{1, 12, len(b.Dataset.Candidates)}
+	if got := countsFor(t, pool, id); got != want {
+		t.Fatalf("counts = %+v, want %+v", got, want)
+	}
+
+	// Flags and uncertainty are visible at database level.
+	var synthetic, approved bool
+	var digest string
+	if err := pool.QueryRow(ctx, `SELECT synthetic, production_approved, content_sha256 FROM regulation_datasets WHERE dataset_id=$1`, id).
+		Scan(&synthetic, &approved, &digest); err != nil {
+		t.Fatal(err)
+	}
+	if !synthetic || approved || digest != b.ContentSHA256 {
+		t.Fatalf("dataset row synthetic=%v approved=%v digest=%s", synthetic, approved, digest)
+	}
+	var unknown int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM regulation_points WHERE dataset_id=$1 AND direction_degrees IS NULL
+		AND direction_status='unknown' AND validity_status='unknown'`, id).Scan(&unknown); err != nil || unknown != 12 {
+		t.Fatalf("unknown points = %d, err %v", unknown, err)
+	}
+	var approvedCandidates int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM regulation_candidates WHERE dataset_id=$1
+		AND (production_approved OR bearing_semantics <> 'candidate_point_neighbor_only')`, id).Scan(&approvedCandidates); err != nil || approvedCandidates != 0 {
+		t.Fatalf("approved/unsemantic candidates = %d, err %v", approvedCandidates, err)
+	}
+	// Stored coordinates answer a geographic query.
+	var near int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM regulation_points WHERE dataset_id=$1
+		AND ST_DWithin(geom, ST_SetSRID(ST_MakePoint(1.0, 1.0), 4326)::geography, 150)`, id).Scan(&near); err != nil || near != 10 {
+		t.Fatalf("points within 150 m = %d, err %v", near, err)
+	}
+	var createdAt time.Time
+	if err := pool.QueryRow(ctx, `SELECT created_at FROM regulation_datasets WHERE dataset_id=$1`, id).Scan(&createdAt); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := Apply(ctx, pool, b)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if replay.Status != StatusUnchanged || replay.Points != 12 {
+		t.Fatalf("replay result = %+v", replay)
+	}
+	if got := countsFor(t, pool, id); got != want {
+		t.Fatalf("counts after replay = %+v, want %+v", got, want)
+	}
+	var createdAgain time.Time
+	if err := pool.QueryRow(ctx, `SELECT created_at FROM regulation_datasets WHERE dataset_id=$1`, id).Scan(&createdAgain); err != nil || !createdAgain.Equal(createdAt) {
+		t.Fatalf("replay rewrote the dataset row: %v vs %v (%v)", createdAgain, createdAt, err)
+	}
+	if legacyCount(t, pool) != legacyBefore {
+		t.Fatal("legacy stop_signs changed")
+	}
+}
+
+func TestIntegrationApplyEmbeddedDataset(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	b := loadEmbedded(t)
+	res, err := Apply(ctx, pool, b)
+	if err != nil {
+		t.Fatalf("apply embedded: %v", err)
+	}
+	if res.Status == StatusInserted {
+		cleanup(t, pool, b.Manifest.DatasetID)
+	}
+	if got := countsFor(t, pool, b.Manifest.DatasetID); got.points != b.Manifest.Counts.Points || got.candidates != b.Manifest.Counts.Candidates || got.datasets != 1 {
+		t.Fatalf("embedded counts = %+v", got)
+	}
+	again, err := Apply(ctx, pool, b)
+	if err != nil || again.Status != StatusUnchanged {
+		t.Fatalf("embedded replay = %+v, %v", again, err)
+	}
+}
+
+func TestIntegrationDigestConflictIsRejectedWithoutWrites(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-conflict")
+	cleanup(t, pool, id)
+	first := datasetVariant(t, id)
+	if _, err := Apply(ctx, pool, first); err != nil {
+		t.Fatal(err)
+	}
+	before := countsFor(t, pool, id)
+
+	changed := datasetVariant(t, id)
+	sum := sha256.Sum256([]byte("different content"))
+	changed.ContentSHA256 = hex.EncodeToString(sum[:])
+	changed.Manifest.ContentSHA256 = changed.ContentSHA256
+	changed.Dataset.Points = changed.Dataset.Points[:11]
+	changed.Dataset.Candidates = nil
+	changed.Manifest.Counts.Points, changed.Manifest.Counts.Candidates = 11, 0
+
+	_, err := Apply(ctx, pool, changed)
+	if !errors.Is(err, ErrDigestConflict) {
+		t.Fatalf("err = %v, want ErrDigestConflict", err)
+	}
+	if got := countsFor(t, pool, id); got != before {
+		t.Fatalf("counts changed on conflict: %+v -> %+v", before, got)
+	}
+	var digest string
+	if err := pool.QueryRow(ctx, `SELECT content_sha256 FROM regulation_datasets WHERE dataset_id=$1`, id).Scan(&digest); err != nil || digest != first.ContentSHA256 {
+		t.Fatalf("stored digest = %s (%v), want original", digest, err)
+	}
+}
+
+func TestIntegrationSameDigestUnderAnotherIDIsRejected(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	idA, idB := uniqueDatasetID("it-digest-a"), uniqueDatasetID("it-digest-b")
+	cleanup(t, pool, idA, idB)
+	a := datasetVariant(t, idA)
+	if _, err := Apply(ctx, pool, a); err != nil {
+		t.Fatal(err)
+	}
+	b := datasetVariant(t, idB)
+	b.ContentSHA256, b.Manifest.ContentSHA256 = a.ContentSHA256, a.ContentSHA256
+	_, err := Apply(ctx, pool, b)
+	if !errors.Is(err, ErrDigestInUse) {
+		t.Fatalf("err = %v, want ErrDigestInUse", err)
+	}
+	if got := countsFor(t, pool, idB); got != (rowCounts{}) {
+		t.Fatalf("rows left behind: %+v", got)
+	}
+}
+
+func TestIntegrationInvalidSeedWritesNothing(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-invalid")
+	cleanup(t, pool, id)
+	b := datasetVariant(t, id)
+	b.Dataset.Candidates[0].NeighborEntityID = "missing-point"
+
+	_, err := Apply(ctx, pool, b)
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Code != CodeCandidateRef {
+		t.Fatalf("err = %v, want candidate reference validation error", err)
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("rows written for an invalid seed: %+v", got)
+	}
+}
+
+func TestIntegrationDatabaseErrorRollsBackEverything(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-rollback-fk")
+	cleanup(t, pool, id)
+	b := datasetVariant(t, id)
+	// Skip pre-validation so the foreign key rejects the last candidate after
+	// the dataset, all points and most candidates have been inserted.
+	last := len(b.Dataset.Candidates) - 1
+	b.Dataset.Candidates[last].NeighborEntityID = "missing-point"
+
+	_, err := applier{skipValidation: true}.apply(ctx, pool, b)
+	if err == nil {
+		t.Fatal("apply succeeded despite a dangling candidate")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("err = %v, want foreign key violation (23503)", err)
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("partial rows survived rollback: %+v", got)
+	}
+}
+
+func TestIntegrationFailureAfterPointsRollsBack(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-rollback-hook")
+	cleanup(t, pool, id)
+	b := datasetVariant(t, id)
+	injected := errors.New("injected failure")
+	_, err := applier{afterPoints: func() error { return injected }}.apply(ctx, pool, b)
+	if !errors.Is(err, injected) {
+		t.Fatalf("err = %v, want injected failure", err)
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("rows survived rollback: %+v", got)
+	}
+	// The same dataset can still be applied afterwards.
+	if res, err := Apply(ctx, pool, b); err != nil || res.Status != StatusInserted {
+		t.Fatalf("apply after rollback = %+v, %v", res, err)
+	}
+}
+
+func TestIntegrationCountMismatchIsNotCommitted(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-count")
+	cleanup(t, pool, id)
+	b := datasetVariant(t, id)
+	b.Manifest.Counts.Candidates++ // manifest promises one more candidate than the data holds
+
+	_, err := applier{skipValidation: true}.apply(ctx, pool, b)
+	if !errors.Is(err, ErrCountMismatch) {
+		t.Fatalf("err = %v, want ErrCountMismatch", err)
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("rows committed despite count mismatch: %+v", got)
+	}
+}
+
+func TestIntegrationConcurrentAppliesInsertExactlyOnce(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-concurrent")
+	cleanup(t, pool, id)
+	b := datasetVariant(t, id)
+
+	const workers = 6
+	statuses := make([]string, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			res, err := Apply(ctx, pool, b)
+			statuses[i], errs[i] = res.Status, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	inserted := 0
+	for i := range statuses {
+		if errs[i] != nil {
+			t.Fatalf("worker %d: %v", i, errs[i])
+		}
+		switch statuses[i] {
+		case StatusInserted:
+			inserted++
+		case StatusUnchanged:
+		default:
+			t.Fatalf("worker %d status %q", i, statuses[i])
+		}
+	}
+	if inserted != 1 {
+		t.Fatalf("inserted by %d workers, want exactly 1 (%v)", inserted, statuses)
+	}
+	if got, want := countsFor(t, pool, id), (rowCounts{1, 12, len(b.Dataset.Candidates)}); got != want {
+		t.Fatalf("counts = %+v, want %+v", got, want)
+	}
+}
+
+func TestIntegrationOtherDatasetsAndLegacyTableAreUntouched(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	idA, idB := uniqueDatasetID("it-other-a"), uniqueDatasetID("it-other-b")
+	cleanup(t, pool, idA, idB)
+	if _, err := Apply(ctx, pool, datasetVariant(t, idA)); err != nil {
+		t.Fatal(err)
+	}
+	beforeA := countsFor(t, pool, idA)
+	var digestBefore string
+	if err := pool.QueryRow(ctx, `SELECT content_sha256 FROM regulation_datasets WHERE dataset_id=$1`, idA).Scan(&digestBefore); err != nil {
+		t.Fatal(err)
+	}
+	legacyBefore := legacyCount(t, pool)
+
+	if _, err := Apply(ctx, pool, datasetVariant(t, idB)); err != nil {
+		t.Fatal(err)
+	}
+	if got := countsFor(t, pool, idA); got != beforeA {
+		t.Fatalf("dataset A changed: %+v -> %+v", beforeA, got)
+	}
+	var digestAfter string
+	if err := pool.QueryRow(ctx, `SELECT content_sha256 FROM regulation_datasets WHERE dataset_id=$1`, idA).Scan(&digestAfter); err != nil || digestAfter != digestBefore {
+		t.Fatalf("dataset A digest changed: %s -> %s (%v)", digestBefore, digestAfter, err)
+	}
+	if legacyCount(t, pool) != legacyBefore {
+		t.Fatal("legacy stop_signs changed")
+	}
+}

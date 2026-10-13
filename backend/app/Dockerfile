@@ -27,6 +27,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate
 
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/seed ./cmd/seed
+
 FROM --platform=$BUILDPLATFORM alpine:3.22 AS atlas
 
 ARG TARGETARCH
@@ -40,6 +45,7 @@ FROM public.ecr.aws/lambda/provided:al2023 AS runner
 COPY --chown=10001:10001 --chmod=0555 --from=atlas /atlas-bin/atlas /usr/local/bin/atlas
 COPY --chown=10001:10001 --chmod=0555 --from=builder /out/api /api
 COPY --chown=10001:10001 --chmod=0555 --from=builder /out/migrate /migrate
+COPY --chown=10001:10001 --chmod=0555 --from=builder /out/seed /seed
 COPY --chown=10001:10001 db /app/db
 COPY --chown=10001:10001 mockResponse.json /app/mockResponse.json
 

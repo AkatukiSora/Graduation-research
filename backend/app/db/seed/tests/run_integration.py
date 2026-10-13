@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Run the seed integration tests against a disposable local PostGIS.
+
+The script starts a fresh PostgreSQL cluster from the toolchain described by the
+report file, applies every migration in ``db/migrations``, runs the Go
+integration tests with ``TEST_DATABASE_URL`` pointing at the cluster's Unix
+socket, then exercises the real ``cmd/seed`` binary over loopback TCP (apply,
+replay, unknown dataset). The cluster is always stopped and removed. The script
+never reads application configuration and never contacts a remote database.
+"""
+import argparse
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parents[3]
+SCHEMA_TESTS = APP_DIR / "db" / "schema" / "tests" / "validate_schema.py"
+MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
+SEED_CLI_DATASET = "synthetic-v1"
+
+
+def load_cluster_class():
+    spec = importlib.util.spec_from_file_location("validate_schema", SCHEMA_TESTS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Cluster
+
+
+def go_env(report):
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/tmp")}
+    for key in ("GOTOOLCHAIN", "GOCACHE", "GOPATH"):
+        env[key] = report["environment"][key]
+    return env
+
+
+def run(argv, env, cwd=APP_DIR, timeout=600):
+    return subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
+def allow_loopback_trust(cluster):
+    """Let the disposable cluster accept its own loopback connections."""
+    hba = cluster.data / "pg_hba.conf"
+    hba.write_text("host gr9_dev validator 127.0.0.1/32 trust\n" + hba.read_text())
+    cluster.run("pg_ctl", "-D", cluster.data, "reload")
+
+
+def psql_scalar(cluster, statement):
+    result = cluster.sql(statement)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def seed_cli(binary, cluster, *args):
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "DB_HOST": "127.0.0.1", "DB_PORT": str(cluster.port), "DB_NAME": "gr9_dev",
+        "DB_USER": "validator", "DB_PASSWORD": "disposable-cluster-uses-trust-auth",
+        "DB_IAM_AUTH": "false", "DB_SSL_MODE": "disable",
+    }
+    return run([str(binary), *args], env, timeout=120)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--toolchain-report", required=True, type=Path)
+    parser.add_argument("--log", type=Path, help="write the go test output to this file")
+    args = parser.parse_args()
+    report = json.loads(args.toolchain_report.read_text())
+    if report.get("status") != "validated_stopped":
+        sys.exit("toolchain report is not a validated local toolchain")
+    go = report["go_binary"]
+    env = go_env(report)
+
+    Cluster = load_cluster_class()
+    db = Cluster(args.toolchain_report)
+    summary: dict = {"passed": False}
+    scratch = tempfile.mkdtemp(prefix="seed-cli-", dir=db.tmp.parent)
+    try:
+        db.start()
+        for setup in ("CREATE ROLE rds_iam NOLOGIN", "CREATE DATABASE gr9_dev"):
+            created = db.sql(setup, database="postgres")
+            assert created.returncode == 0, created.stderr
+        for migration in MIGRATIONS:
+            applied = db.sql("", file=str(migration))
+            assert applied.returncode == 0, f"{migration.name}\n{applied.stderr}"
+        allow_loopback_trust(db)
+
+        url = f"postgresql://validator@/gr9_dev?host={db.sock}&port={db.port}"
+        tests = run([go, "test", "./internal/seed/...", "-run", "Integration", "-count=1", "-v"],
+                    dict(env, TEST_DATABASE_URL=url))
+        if args.log:
+            args.log.write_text(tests.stdout + tests.stderr)
+        assert tests.returncode == 0, tests.stdout + tests.stderr
+        passed = [l for l in tests.stdout.splitlines() if l.startswith("--- PASS: TestIntegration")]
+        skipped = [l for l in tests.stdout.splitlines() if l.startswith("--- SKIP")]
+        assert len(passed) >= 10 and not skipped, tests.stdout
+        summary["integration_tests_passed"] = len(passed)
+
+        binary = Path(scratch) / "seed"
+        built = run([go, "build", "-o", str(binary), "./cmd/seed"], env)
+        assert built.returncode == 0, built.stderr
+        first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_DATASET)
+        assert first.returncode == 0 and '"status":"inserted"' in first.stdout, first.stdout + first.stderr
+        replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_DATASET)
+        assert replay.returncode == 0 and '"status":"unchanged"' in replay.stdout, replay.stdout + replay.stderr
+        missing = seed_cli(binary, db, "--apply", "--dataset", "missing-dataset")
+        assert missing.returncode == 1, missing.stdout + missing.stderr
+        counts = psql_scalar(db, "SELECT (SELECT count(*) FROM regulation_datasets WHERE dataset_id='synthetic-v1')||','||"
+                                 "(SELECT count(*) FROM regulation_points WHERE dataset_id='synthetic-v1')||','||"
+                                 "(SELECT count(*) FROM regulation_candidates WHERE dataset_id='synthetic-v1')")
+        flags = psql_scalar(db, "SELECT synthetic::text||','||production_approved::text FROM regulation_datasets"
+                                " WHERE dataset_id='synthetic-v1'")
+        assert counts == "1,12,58", counts
+        assert flags == "true,false", flags
+        summary.update(cli_apply=json.loads(first.stdout), cli_replay=json.loads(replay.stdout),
+                       cli_counts_datasets_points_candidates=counts, cli_flags_synthetic_production=flags)
+        summary["passed"] = True
+    finally:
+        summary["database_stopped"] = db.stop()
+        try:
+            for leftover in Path(scratch).glob("*"):
+                leftover.unlink()
+            Path(scratch).rmdir()
+        except OSError:
+            pass
+    print(json.dumps(summary))
+    sys.exit(0 if summary["passed"] and summary["database_stopped"] else 1)
+
+
+if __name__ == "__main__":
+    main()

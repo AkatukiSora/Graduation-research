@@ -1,0 +1,88 @@
+# 規制ポイントの仮データ投入（seed）
+
+`backend/app` に埋め込んだ合成データを、PostgreSQL（PostGIS）の `regulation_datasets` / `regulation_points` / `regulation_candidates` へ投入するコマンドです。API とは別の実行ファイル（`/seed`）で、API の起動時には実行されません。
+
+## 仮データの性質
+
+- 埋め込み対象は **合成データ**です。実在の標識・座標・境界・規制情報は含みません。
+- すべてのポイントは `direction_status = unknown`、`validity_status = unknown`、`direction_degrees = NULL` です。
+- データセットは `synthetic = true`、`production_approved = false` で保存されます。投入によって承認状態が変わることはありません。
+- 候補（`regulation_candidates`）の `candidate_bearing` は、隣り合うポイントどうしの幾何的な方位です。標識の向きではなく、公式の方向としては扱えません（`bearing_semantics = candidate_point_neighbor_only`）。
+
+## 埋め込みデータ
+
+```text
+internal/seeddata/data/<dataset-id>/
+├── manifest.json   # 版・月・地域・件数・dataset.json の SHA-256・生成元・出典
+└── dataset.json    # points と candidates
+```
+
+現在は `synthetic-v1`（12 ポイント、58 候補、対象月 `202701`、地域 `synthetic:rectangle`）です。ファイルはビルド時にバイナリへ埋め込まれ、実行時にファイルシステムからは読み込みません。
+
+## 検証（データベース不要）
+
+```sh
+cd backend/app
+go run ./cmd/seed --validate-only --dataset synthetic-v1
+```
+
+`--dataset` を省略すると、埋め込まれたすべてのデータセットを検証します。次の項目を確認し、違反があれば理由コード付きのメッセージを表示して終了コード 1 で終了します。
+
+- マニフェストと `dataset.json` の SHA-256、件数（ポイント・候補・棄却 0・領域外 0）
+- ID と `raw_uid`（32 文字以内）の一意性、経度 [-180, 180]・緯度 [-90, 90] の有限値
+- 全ポイントが方向・有効性とも unknown で、データセットが合成かつ未承認であること
+- 候補が同じデータセット内の別ポイントを参照し、順位が 1 から連続し、距離が 0 以上、方位が [0, 360) であること
+
+成功時は件数とダイジェストを JSON で 1 行出力します。
+
+## 投入
+
+```sh
+cd backend/app
+go run ./cmd/seed --apply --dataset synthetic-v1
+```
+
+`--apply` は `--dataset` を明示したときだけ実行されます。接続先は API・`migrate` と同じ環境変数（`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD` または `DB_IAM_AUTH`、`DB_SSL_MODE`、`AWS_REGION`）で指定します。資格情報はログに出力しません。
+
+事前に `migrate` で `regulation_*` テーブルを作成してください。ランタイム用の読み取り専用ロールには INSERT 権限がないため、投入には書き込み権限を持つ接続（マイグレーションと同じ主体など）を使用します。ロールやシークレットは作成しません。
+
+投入は 1 つのトランザクションで行います。
+
+1. データセット ID をキーにしたアドバイザリロックを取得し、同じデータセットの同時投入を直列化します。
+2. 同じ ID・同じダイジェストが既に存在すれば何も書き込まず `unchanged` を返します。
+3. 同じ ID で異なるダイジェストが存在する場合、または同じダイジェストが別の ID に存在する場合は書き込まずに拒否します。
+4. データセット、ポイント、候補を追加し、保存件数とマニフェストの件数、unknown 状態のポイント数を照合してからコミットします。途中でエラーが起きた場合はすべてロールバックします。
+
+他のデータセットと既存の `stop_signs` テーブルは変更しません。出力例は次のとおりです。
+
+```json
+{"dataset_id":"synthetic-v1","mode":"apply","status":"inserted","points":12,"candidates":58,"content_sha256":"…"}
+```
+
+## 埋め込みデータの再生成と確認
+
+`db/seed/synthetic/build_dataset.py` は、固定の合成 CSV（`db/seed/synthetic/input/`）を `backend/generation_io` の CLI（`prepare-input`、`generate`、`verify`）で処理し、`internal/seeddata/data/synthetic-v1/` の JSON を作ります。乱数は使用しません。
+
+```sh
+cd backend/generation_io
+uv sync --locked --all-groups
+uv run --locked python ../app/db/seed/synthetic/build_dataset.py --check   # 再生成してバイト単位で一致を確認
+uv run --locked python ../app/db/seed/synthetic/build_dataset.py --write   # チェックイン済みファイルを更新
+```
+
+## テスト
+
+```sh
+cd backend/app
+go test ./...
+python3 db/seed/tests/run_integration.py --toolchain-report <toolchain-report.json>
+```
+
+後者は使い捨てのローカル PostGIS クラスタを作成し、全マイグレーションを適用して `internal/seed` の統合テスト（初回投入、再投入の no-op、ダイジェスト不一致の拒否、不正データ、ロールバック、並行投入、件数照合）と `cmd/seed` の実行ファイルでの投入を検証し、終了時にクラスタを停止・削除します。統合テストは `TEST_DATABASE_URL` が未設定ならスキップされ、ホストがループバックまたはローカルのソケット以外の場合は実行を拒否します。
+
+## 検証済みの範囲と未検証の範囲
+
+- 検証済み：Go の単体テスト、`--validate-only`、使い捨てのローカル PostgreSQL／PostGIS に対する統合テストと `cmd/seed` 実行ファイルでの投入・再投入。
+- 未検証：コンテナイメージ（`/seed`）の実ビルド、AWS／RDS（IAM 認証）上での投入、GitHub Actions での実行。
+- `run_integration.py` の `--toolchain-report` は、PostgreSQL 17 と PostGIS を展開したディレクトリ（`postgres/root`）と同じ場所に置く、ツールチェーンの記録ファイル（JSON）です。リポジトリだけでは再現できず、同等の使い捨て環境を用意する必要があります。
+- `build_dataset.py --check` が全体でバイト一致するのは、`uv.lock` で固定した環境で実行した場合です。マニフェストには実行時のライブラリ版が記録されるため、別の環境では `dataset.json` のダイジェストだけが一致します。

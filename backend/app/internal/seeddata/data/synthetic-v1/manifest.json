@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-v1",
+  "dataset_file": "dataset.json",
+  "source_month": "202701",
+  "region_id": "synthetic:rectangle",
+  "synthetic": true,
+  "production_approved": false,
+  "content_sha256": "1b84c6dc7494ac54b4b032114272e139c4910f1237d158db3fa1d7e8198c17eb",
+  "counts": {
+    "points": 12,
+    "candidates": 58,
+    "rejected": 0,
+    "outside_region": 0
+  },
+  "provenance": {
+    "dataset": "synthetic-regulation-63",
+    "publisher": "graduation-research-synthetic",
+    "edition": "synthetic-v1",
+    "retrieved_at": "not-applicable",
+    "terms_reference": "not-applicable",
+    "rights_status": "synthetic-no-third-party-data",
+    "input_manifest_sha256": "cd13eae6b6724eef0bd446b124ea55020526fe4201742276b2893489e4fa82fb"
+  },
+  "generator": {
+    "tool": "generation_io",
+    "artifact_schema_version": 3,
+    "kernel_version": "p05-adopted-kernel",
+    "parameters": {
+      "max_candidates": 6,
+      "candidate_radius_m": 80.0
+    },
+    "runtime_versions": {
+      "python": "3.13.5",
+      "numpy": "2.3.5",
+      "pandas": "2.3.3",
+      "scipy": "1.16.3"
+    },
+    "generation_manifest_sha256": "b7291fd68c8db64867c97871d43de6b2a13c573d7df7c74fb43d9beb508cbb51",
+    "artifact_sha256": {
+      "candidates": "5050a70618cdd20c4851fbe3593cec618be08e77a74732ae19a7cdc487efb964",
+      "normalized": "85ef77cd4e280b6d42fe7f1d34899bfe1fe1b1c045f02423a3f2072a0050bb67",
+      "rejected": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_manifest": "6b3eec0250ab42d2a4e5dad634788e9084e7b6c8a148b1771245e59d967176ed"
+    },
+    "build_script": "db/seed/synthetic/build_dataset.py"
+  }
+}

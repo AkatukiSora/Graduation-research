@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "source.csv",
+    "bytes": 5658,
+    "sha256": "e47713d187b312bbd3f55f30e8e10d4c82cd957fd91ca0f165f9559939c4fa21",
+    "crc32": "535c91f1",
+    "source_month": "202701",
+    "format_version": "k_2.1",
+    "encoding": "cp932",
+    "header_sha256": "74334997340bd11605f3cb3edbc8cea93782df73af3cdc2492b9c48cb6825ca1"
+  },
+  "boundary": {
+    "path": "boundary.geojson",
+    "bytes": 157,
+    "sha256": "7330f575420f269d278bfb0ee577f5907ee1986b44aeafdc73483edf5f328eb4",
+    "crs": "EPSG:4326",
+    "region_id": "synthetic:rectangle"
+  },
+  "provenance": {
+    "dataset": "synthetic-regulation-63",
+    "publisher": "graduation-research-synthetic",
+    "edition": "synthetic-v1",
+    "retrieved_at": "not-applicable",
+    "terms_reference": "not-applicable",
+    "rights_status": "synthetic-no-third-party-data"
+  },
+  "synthetic": true,
+  "production_approved": false
+}
