@@ -10,7 +10,7 @@ import android.os.VibrationEffect
 
 // 選ばれた一時停止標識との距離を確認
 // 音声・バイブ通知と一時停止回数のカウントを行うクラス
-class DistanceChecker(private val context: Context) {
+class DistanceChecker(context: Context) {
     // 一時停止できた回数
     var stopSuccsesCount = 0
 
