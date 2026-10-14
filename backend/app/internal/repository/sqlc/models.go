@@ -42,6 +42,12 @@ type RegulationPoint struct {
 	NormalizationStatus string
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
+	ImputationMethod    string
+	ImputationReason    string
+	DirectionSource     string
+	DirectionEvidence   []byte
+	ValidityReason      string
+	ValidityEvidence    []byte
 }
 
 type StopSign struct {
