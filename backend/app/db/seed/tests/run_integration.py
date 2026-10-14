@@ -24,6 +24,7 @@ APP_DIR = Path(__file__).resolve().parents[3]
 SCHEMA_TESTS = APP_DIR / "db" / "schema" / "tests" / "validate_schema.py"
 MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 SEED_CLI_DATASET = "synthetic-v1"
+SEED_CLI_V2_DATASET = "synthetic-v2"
 
 
 def load_cluster_class():
@@ -51,11 +52,11 @@ def allow_loopback_trust(cluster, database="gr9_dev"):
     cluster.run("pg_ctl", "-D", cluster.data, "reload")
 
 
-def migrate_cli(binary, cluster, database, atlas, seed_ids):
+def migrate_cli(binary, cluster, database, atlas, seed_ids, port=None):
     """Run the real migrate binary (Atlas apply, then the optional seed step)."""
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "DB_HOST": "127.0.0.1", "DB_PORT": str(cluster.port), "DB_NAME": database,
+        "DB_HOST": "127.0.0.1", "DB_PORT": str(port if port is not None else cluster.port), "DB_NAME": database,
         "DB_USER": "validator", "DB_PASSWORD": "disposable-cluster-uses-trust-auth",
         "DB_IAM_AUTH": "false", "DB_SSL_MODE": "disable",
         "ATLAS_BINARY_PATH": atlas,
@@ -66,16 +67,26 @@ def migrate_cli(binary, cluster, database, atlas, seed_ids):
     return run([str(binary)], env, timeout=180)
 
 
-def psql_scalar(cluster, statement):
-    result = cluster.sql(statement)
+def json_lines(text):
+    values = []
+    for line in text.splitlines():
+        try:
+            values.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return values
+
+
+def psql_scalar(cluster, statement, database="gr9_dev"):
+    result = cluster.sql(statement, database=database)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
 
 
-def seed_cli(binary, cluster, *args):
+def seed_cli(binary, cluster, *args, database="gr9_dev"):
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "DB_HOST": "127.0.0.1", "DB_PORT": str(cluster.port), "DB_NAME": "gr9_dev",
+        "DB_HOST": "127.0.0.1", "DB_PORT": str(cluster.port), "DB_NAME": database,
         "DB_USER": "validator", "DB_PASSWORD": "disposable-cluster-uses-trust-auth",
         "DB_IAM_AUTH": "false", "DB_SSL_MODE": "disable",
     }
@@ -85,17 +96,22 @@ def seed_cli(binary, cluster, *args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--toolchain-report", required=True, type=Path)
+    parser.add_argument("--scratch-dir", type=Path, help="dedicated local cluster/scratch directory")
     parser.add_argument("--log", type=Path, help="write the go test output to this file")
     args = parser.parse_args()
-    report = json.loads(args.toolchain_report.read_text())
+    report_path = args.toolchain_report.resolve()
+    scratch_dir = args.scratch_dir.resolve() if args.scratch_dir else None
+    if scratch_dir is not None and (scratch_dir.is_relative_to(report_path.parent) or report_path.is_relative_to(scratch_dir)):
+        sys.exit("scratch directory must be separate from the read-only toolchain report directory")
+    report = json.loads(report_path.read_text())
     if report.get("status") != "validated_stopped":
         sys.exit("toolchain report is not a validated local toolchain")
     go = report["go_binary"]
     env = go_env(report)
 
     Cluster = load_cluster_class()
-    db = Cluster(args.toolchain_report)
-    summary: dict = {"passed": False}
+    db = Cluster(report_path, scratch_dir)
+    summary: dict = {"passed": False, "scratch_directory": str(scratch_dir) if scratch_dir else None}
     scratch = tempfile.mkdtemp(prefix="seed-cli-", dir=db.tmp.parent)
     try:
         db.start()
@@ -135,6 +151,23 @@ def main():
         assert counts == "1,12,58", counts
         assert flags == "true,false", flags
 
+        # Exercise the same streaming binary path with the compressed v2 fixture.
+        v2_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET)
+        assert v2_first.returncode == 0 and '"status":"inserted"' in v2_first.stdout, v2_first.stdout + v2_first.stderr
+        v2_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET)
+        assert v2_replay.returncode == 0 and '"status":"unchanged"' in v2_replay.stdout, v2_replay.stdout + v2_replay.stderr
+        v2_counts = psql_scalar(db, "SELECT (SELECT count(*) FROM regulation_datasets WHERE dataset_id='synthetic-v2')||','||"
+                                    "(SELECT count(*) FROM regulation_points WHERE dataset_id='synthetic-v2')||','||"
+                                    "(SELECT count(*) FROM regulation_candidates WHERE dataset_id='synthetic-v2')")
+        v2_flags = psql_scalar(db, "SELECT synthetic::text||','||production_approved::text FROM regulation_datasets"
+                                   " WHERE dataset_id='synthetic-v2'")
+        v2_states = psql_scalar(db, "SELECT count(*) FILTER (WHERE direction_status='unknown' AND validity_status='unknown')"
+                                    "||','||count(*) FILTER (WHERE direction_degrees IS NOT NULL) FROM regulation_points"
+                                    " WHERE dataset_id='synthetic-v2'")
+        assert v2_counts == "1,12,58", v2_counts
+        assert v2_flags == "true,false", v2_flags
+        assert v2_states == "12,0", v2_states
+
         # The API repository reads the dataset the CLI just applied.
         repo_tests = run([go, "test", "./internal/repository/postgres/...", "-run", "Integration", "-count=1", "-v"],
                          dict(env, TEST_DATABASE_URL=url))
@@ -162,13 +195,41 @@ def main():
         summary.update(cli_apply=json.loads(first.stdout), cli_replay=json.loads(replay.stdout),
                        cli_counts_datasets_points_candidates=counts, cli_flags_synthetic_production=flags)
 
+        # Re-run both seed formats after dropping only the approval columns in a
+        # separate disposable database, matching the post-contract seed schema.
+        created = db.sql("CREATE DATABASE gr9_seed_no_approval", database="postgres")
+        assert created.returncode == 0, created.stderr
+        for migration in MIGRATIONS:
+            applied = db.sql("", file=str(migration), database="gr9_seed_no_approval")
+            assert applied.returncode == 0, f"{migration.name} on no-approval database\n{applied.stderr}"
+        for statement in (
+            "ALTER TABLE regulation_datasets DROP CONSTRAINT regulation_datasets_synthetic_not_approved, DROP COLUMN production_approved",
+            "ALTER TABLE regulation_candidates DROP CONSTRAINT regulation_candidates_not_approved, DROP COLUMN production_approved",
+        ):
+            dropped = db.sql(statement, database="gr9_seed_no_approval")
+            assert dropped.returncode == 0, dropped.stderr
+        allow_loopback_trust(db, "gr9_seed_no_approval")
+        compat_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_DATASET, database="gr9_seed_no_approval")
+        compat_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_DATASET, database="gr9_seed_no_approval")
+        compat_v2_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET, database="gr9_seed_no_approval")
+        compat_v2_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET, database="gr9_seed_no_approval")
+        assert compat_first.returncode == 0 and '"status":"inserted"' in compat_first.stdout, compat_first.stdout + compat_first.stderr
+        assert compat_replay.returncode == 0 and '"status":"unchanged"' in compat_replay.stdout, compat_replay.stdout + compat_replay.stderr
+        assert compat_v2_first.returncode == 0 and '"status":"inserted"' in compat_v2_first.stdout, compat_v2_first.stdout + compat_v2_first.stderr
+        assert compat_v2_replay.returncode == 0 and '"status":"unchanged"' in compat_v2_replay.stdout, compat_v2_replay.stdout + compat_v2_replay.stderr
+        compat_counts = psql_scalar(db, "SELECT (SELECT count(*) FROM regulation_datasets)||','||"
+                                        "(SELECT count(*) FROM regulation_points)||','||"
+                                        "(SELECT count(*) FROM regulation_candidates)", database="gr9_seed_no_approval")
+        assert compat_counts == "2,24,116", compat_counts
+        summary.update(seed_without_approval_columns="v1/v2 insert and replay passed", no_approval_counts=compat_counts)
+
         # The deployed path: migrate applies the schema to an empty database
         # and then seeds the datasets named in SEED_DATASET_IDS.
         migrate_binary = Path(scratch) / "migrate"
         built = run([go, "build", "-o", str(migrate_binary), "./cmd/migrate"], env)
         assert built.returncode == 0, built.stderr
         atlas = report["atlas_binary"]
-        for database in ("gr9_migrate_only", "gr9_migrate_seed", "gr9_migrate_bad"):
+        for database in ("gr9_migrate_only", "gr9_migrate_empty", "gr9_migrate_seed", "gr9_migrate_bad"):
             created = db.sql(f"CREATE DATABASE {database}", database="postgres")
             assert created.returncode == 0, created.stderr
             allow_loopback_trust(db, database)
@@ -181,20 +242,44 @@ def main():
         assert plain.returncode == 0, plain.stdout + plain.stderr
         assert table_count("gr9_migrate_only", "regulation_datasets") == "0", "schema applied, nothing seeded"
 
-        seeded = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, SEED_CLI_DATASET)
-        assert seeded.returncode == 0 and '"status":"inserted"' in seeded.stdout, seeded.stdout + seeded.stderr
-        again = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, SEED_CLI_DATASET)
-        assert again.returncode == 0 and '"status":"unchanged"' in again.stdout, again.stdout + again.stderr
-        assert table_count("gr9_migrate_seed", "regulation_points") == "12"
-        assert table_count("gr9_migrate_seed", "regulation_candidates") == "58"
+        empty = migrate_cli(migrate_binary, db, "gr9_migrate_empty", atlas, "")
+        assert empty.returncode == 0, empty.stdout + empty.stderr
+        assert table_count("gr9_migrate_empty", "regulation_datasets") == "0", "empty seed list must perform no writes"
 
-        # An unknown dataset id must fail the run and leave the data tables empty.
-        bad = migrate_cli(migrate_binary, db, "gr9_migrate_bad", atlas, SEED_CLI_DATASET + ",missing-dataset")
-        assert bad.returncode == 1, bad.stdout + bad.stderr
-        assert table_count("gr9_migrate_bad", "regulation_points") == "0", "validation must precede any write"
-        summary.update(migrate_schema_only="ok", migrate_seed_inserted=json.loads(seeded.stdout.strip().splitlines()[-1]),
-                       migrate_seed_replay=json.loads(again.stdout.strip().splitlines()[-1]),
-                       migrate_unknown_dataset_rejected_without_writes=True)
+        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET}"
+        seeded = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
+        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 2, seeded.stdout + seeded.stderr
+        again = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
+        seeded_rows = json_lines(seeded.stdout)
+        replay_rows = json_lines(again.stdout)
+        assert len(seeded_rows) == 2 and {row["dataset_id"] for row in seeded_rows} == {SEED_CLI_DATASET, SEED_CLI_V2_DATASET}
+        assert len(replay_rows) == 2 and {row["dataset_id"] for row in replay_rows} == {SEED_CLI_DATASET, SEED_CLI_V2_DATASET}
+        assert all(row["status"] == "inserted" for row in seeded_rows)
+        assert all(row["status"] == "unchanged" for row in replay_rows)
+        assert table_count("gr9_migrate_seed", "regulation_points") == "24"
+        assert table_count("gr9_migrate_seed", "regulation_candidates") == "116"
+
+        # Unknown IDs must fail even when DB_HOST points at an unavailable local
+        # port, proving preflight precedes database pool creation and Atlas.
+        offline_bad = migrate_cli(migrate_binary, db, "gr9_migrate_bad", atlas,
+                                  seed_ids + ",missing-dataset", port=1)
+        offline_output = offline_bad.stdout + offline_bad.stderr
+        assert offline_bad.returncode == 1 and "missing-dataset" in offline_output, offline_output
+        assert "connection refused" not in offline_output.lower(), offline_output
+
+        # Unknown requested IDs must also leave a reachable fresh database schema untouched.
+        bad = migrate_cli(migrate_binary, db, "gr9_migrate_bad", atlas, seed_ids + ",missing-dataset")
+        bad_output = bad.stdout + bad.stderr
+        assert bad.returncode == 1 and "missing-dataset" in bad_output, bad_output
+        public_tables = psql_scalar(db, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'",
+                                    database="gr9_migrate_bad")
+        assert public_tables == "0", f"preflight failure applied schema: found {public_tables} public tables"
+        summary.update(migrate_schema_only="ok", migrate_empty_seed_no_writes=True,
+                       migrate_seed_inserted=json_lines(seeded.stdout),
+                       migrate_seed_replay=json_lines(again.stdout),
+                       migrate_unknown_dataset_rejected_before_database_or_atlas=True,
+                       migrate_unknown_dataset_rejected_without_db_connection=True,
+                       migrate_bad_database_public_tables=public_tables)
         summary["passed"] = True
     finally:
         summary["database_stopped"] = db.stop()

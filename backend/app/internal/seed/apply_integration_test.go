@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,6 +69,158 @@ func cleanup(t *testing.T, pool *pgxpool.Pool, ids ...string) {
 			}
 		}
 	})
+}
+
+func TestIntegrationApplyV2LateDecodeRollsBackPointsAndDataset(t *testing.T) {
+	pool := testPool(t)
+	id := uniqueDatasetID("it-v2-late-decode")
+	cleanup(t, pool, id)
+	fixture, _ := mixedV2Fixture(t, id)
+	stagedFS := lateCandidateFailureFS(t, fixture, id)
+	bundle, err := Load(stagedFS, id)
+	if err != nil {
+		t.Fatalf("Load valid preflight fixture: %v", err)
+	}
+	if _, err := Apply(context.Background(), pool, bundle); err == nil {
+		t.Fatal("Apply accepted a late candidate decode failure")
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("late candidate failure left partial v2 rows: %+v", got)
+	}
+}
+
+func TestIntegrationApplyV2CRCFailureAfterPointInsertRollsBack(t *testing.T) {
+	pool := testPool(t)
+	id := uniqueDatasetID("it-v2-crc")
+	cleanup(t, pool, id)
+	fixture, _ := mixedV2Fixture(t, id)
+	stagedFS := lateCandidateCRCFailureFS(t, fixture, id)
+	bundle, err := Load(stagedFS, id)
+	if err != nil {
+		t.Fatalf("Load CRC fixture: %v", err)
+	}
+	if _, err := Apply(context.Background(), pool, bundle); err == nil {
+		t.Fatal("Apply accepted a late gzip CRC failure")
+	}
+	if stagedFS.targetOpens != 3 {
+		t.Fatalf("candidate shard opened %d times, want CRC failure during insertion scan", stagedFS.targetOpens)
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("CRC failure left partial v2 rows: %+v", got)
+	}
+}
+
+func TestIntegrationApplyV2CancellationAfterPointInsertRollsBack(t *testing.T) {
+	pool := testPool(t)
+	id := uniqueDatasetID("it-v2-cancel")
+	cleanup(t, pool, id)
+	fixture, _ := mixedV2Fixture(t, id)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stagedFS := &stagedCandidateFS{
+		validFS: fixture, lateFS: fixture, target: id + "/candidates-00001.jsonl.gz", onLateOpen: cancel,
+	}
+	bundle, err := Load(stagedFS, id)
+	if err != nil {
+		t.Fatalf("Load cancellation fixture: %v", err)
+	}
+	if _, err := Apply(ctx, pool, bundle); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Apply cancellation error = %v, want context.Canceled", err)
+	}
+	if stagedFS.targetOpens != 3 {
+		t.Fatalf("candidate shard opened %d times, want cancellation during insertion scan", stagedFS.targetOpens)
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("cancellation left partial v2 rows: %+v", got)
+	}
+}
+
+func TestIntegrationApplyV2DatabaseFailureRollsBackEverything(t *testing.T) {
+	pool := testPool(t)
+	id := uniqueDatasetID("it-v2-db-failure")
+	cleanup(t, pool, id)
+	objectSuffix := strings.ReplaceAll(id, "-", "_")
+	if len(objectSuffix) > 32 {
+		objectSuffix = objectSuffix[len(objectSuffix)-32:]
+	}
+	functionName := "test_v2_candidate_fail_" + objectSuffix
+	triggerName := "test_v2_candidate_fail_" + objectSuffix
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, "CREATE FUNCTION public."+functionName+`() RETURNS trigger LANGUAGE plpgsql AS $body$
+BEGIN
+  RAISE EXCEPTION 'injected candidate storage failure' USING ERRCODE = '23514';
+END;
+$body$`); err != nil {
+		t.Fatalf("create candidate failure function: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "CREATE TRIGGER "+triggerName+" BEFORE INSERT ON regulation_candidates FOR EACH ROW EXECUTE FUNCTION public."+functionName+"()"); err != nil {
+		_, _ = pool.Exec(ctx, "DROP FUNCTION public."+functionName+"()")
+		t.Fatalf("create candidate failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DROP TRIGGER IF EXISTS "+triggerName+" ON regulation_candidates")
+		_, _ = pool.Exec(context.Background(), "DROP FUNCTION IF EXISTS public."+functionName+"()")
+	})
+	fixture, _ := mixedV2Fixture(t, id)
+	bundle, err := Load(fixture, id)
+	if err != nil {
+		t.Fatalf("Load database-failure fixture: %v", err)
+	}
+	if _, err := Apply(ctx, pool, bundle); err == nil {
+		t.Fatal("Apply succeeded despite the injected candidate database failure")
+	} else {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+			t.Fatalf("Apply error = %v, want injected check violation (23514)", err)
+		}
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{}) {
+		t.Fatalf("database failure left partial v2 rows: %+v", got)
+	}
+}
+
+func TestIntegrationApplyV2MixedEvidenceStatesAndReplay(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := uniqueDatasetID("it-v2-mixed")
+	cleanup(t, pool, id)
+	fixture, _ := mixedV2Fixture(t, id)
+	bundle, err := Load(fixture, id)
+	if err != nil {
+		t.Fatalf("Load mixed v2 fixture: %v", err)
+	}
+	if err := Validate(bundle); err != nil {
+		t.Fatalf("Validate mixed v2 fixture: %v", err)
+	}
+	inserted, err := Apply(ctx, pool, bundle)
+	if err != nil || inserted.Status != StatusInserted || inserted.Points != 12 || inserted.Candidates != 58 {
+		t.Fatalf("Apply mixed v2 fixture = %+v, %v", inserted, err)
+	}
+	unchanged, err := Apply(ctx, pool, bundle)
+	if err != nil || unchanged.Status != StatusUnchanged {
+		t.Fatalf("replay mixed v2 fixture = %+v, %v", unchanged, err)
+	}
+	var unknownDirections, inferredDirections, confirmedDirections, unknownValidity, valid, invalid int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE direction_status='unknown'),
+		count(*) FILTER (WHERE direction_status='inferred'), count(*) FILTER (WHERE direction_status='confirmed'),
+		count(*) FILTER (WHERE validity_status='unknown'), count(*) FILTER (WHERE validity_status='valid'),
+		count(*) FILTER (WHERE validity_status='invalid') FROM regulation_points WHERE dataset_id=$1`, id).
+		Scan(&unknownDirections, &inferredDirections, &confirmedDirections, &unknownValidity, &valid, &invalid); err != nil {
+		t.Fatal(err)
+	}
+	if unknownDirections != 9 || inferredDirections != 2 || confirmedDirections != 1 || unknownValidity != 10 || valid != 1 || invalid != 1 {
+		t.Fatalf("stored mixed states = direction %d/%d/%d validity %d/%d/%d", unknownDirections, inferredDirections, confirmedDirections, unknownValidity, valid, invalid)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE regulation_points SET direction_evidence=jsonb_set(direction_evidence, '{entrance,lon}', '1'::jsonb)
+		WHERE dataset_id=$1 AND imputation_method='source_entrance_geometry'`, id); err != nil {
+		t.Fatalf("tamper stored v2 evidence: %v", err)
+	}
+	if _, err := Apply(ctx, pool, bundle); err == nil {
+		t.Fatal("replay accepted changed stored evidence")
+	}
+	if got := countsFor(t, pool, id); got != (rowCounts{datasets: 1, points: 12, candidates: 58}) {
+		t.Fatalf("stored state mismatch changed dataset counts: %+v", got)
+	}
 }
 
 func TestIntegrationApplyInsertsAndReplaysAsNoop(t *testing.T) {

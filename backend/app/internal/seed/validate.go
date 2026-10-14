@@ -2,6 +2,7 @@ package seed
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -61,6 +62,12 @@ func invalid(code, format string, args ...any) error {
 // and candidate references. Synthetic datasets must stay unknown in direction
 // and validity and must never be production approved.
 func Validate(b *Bundle) error {
+	if b == nil {
+		return invalid(CodeSchemaVersion, "bundle is nil")
+	}
+	if b.Manifest.SchemaVersion == v2SchemaVersion {
+		return b.validateV2(context.Background())
+	}
 	m, d := &b.Manifest, &b.Dataset
 	if m.SchemaVersion != SchemaVersion || d.SchemaVersion != SchemaVersion {
 		return invalid(CodeSchemaVersion, "manifest version %d and dataset version %d must both be %d", m.SchemaVersion, d.SchemaVersion, SchemaVersion)
