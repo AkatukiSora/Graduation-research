@@ -66,6 +66,7 @@ class MainActivity : AppCompatActivity() {
             val radioVibe = dialogView.findViewById<RadioButton>(
                 R.id.radioVibe
             )
+
             val radioBoth = dialogView.findViewById<RadioButton>(
                 R.id.radioBoth
             )
@@ -134,7 +135,6 @@ class MainActivity : AppCompatActivity() {
                     )
 
                     Log.e("MODE", "音声+バイブモード")
-
                 }
                 dialog.dismiss()
                 checker.setFirstLaunchFinished()
@@ -285,31 +285,51 @@ class MainActivity : AppCompatActivity() {
                 .setView(settingsView)
                 .create()
 
-            val radioModeGroup = settingsView.findViewById<RadioGroup>(
-                R.id. radioModeGroup
+            //アラート用RadioGroup
+            val radioAlertModeGroup = settingsView.findViewById<RadioGroup>(
+                R.id. radioAlertModeGroup
+            )
+
+            //距離用RadioGroup
+            val radioDistanceModeGroup = settingsView.findViewById<RadioGroup>(
+                R.id. radioDistanceModeGroup
             )
 
             val Btnmap = settingsView.findViewById<Button>(R.id.btnReport)
 
             when (checker.getAlertMode()) {
                 FirstLaunchCheck.MODE_SOUND -> {
-                    radioModeGroup.check(R.id.radioSound)
+                    radioAlertModeGroup.check(R.id.radioSound)
                 }
 
                 FirstLaunchCheck.MODE_VIBRATION -> {
-                    radioModeGroup.check(R.id.radioVibration)
+                    radioAlertModeGroup.check(R.id.radioVibration)
                 }
 
                 FirstLaunchCheck.MODE_BOTH -> {
-                    radioModeGroup.check(R.id.radioBoth)
+                    radioAlertModeGroup.check(R.id.radioBoth)
                 }
 
                 else -> {
-                    radioModeGroup.check(R.id.radioSound)
+                    radioAlertModeGroup.check(R.id.radioSound)
                 }
             }
 
-            radioModeGroup.setOnCheckedChangeListener { _: RadioGroup, checkedId: Int ->
+            when (checker.getDistanceMode()) {
+                FirstLaunchCheck.MODE_NEAR -> {
+                    radioDistanceModeGroup.check(R.id.radioNear)
+                }
+
+                FirstLaunchCheck.MODE_FAR -> {
+                    radioDistanceModeGroup.check(R.id.radioFar)
+                }
+
+                else -> {
+                    radioDistanceModeGroup.check(R.id.radioNear)
+                }
+            }
+
+            radioAlertModeGroup.setOnCheckedChangeListener { _: RadioGroup, checkedId: Int ->
                 when (checkedId) {
                     R.id.radioSound -> {
                         checker.saveAlertMode(
@@ -326,6 +346,23 @@ class MainActivity : AppCompatActivity() {
                     R.id.radioBoth -> {
                         checker.saveAlertMode(
                             FirstLaunchCheck.MODE_BOTH
+                        )
+                    }
+                }
+            }
+
+
+            radioDistanceModeGroup.setOnCheckedChangeListener { _: RadioGroup, checkedId: Int ->
+                when (checkedId) {
+                    R.id.radioNear -> {
+                        checker.saveDistanceMode(
+                            FirstLaunchCheck.MODE_NEAR
+                        )
+                    }
+
+                    R.id.radioFar -> {
+                        checker.saveDistanceMode(
+                            FirstLaunchCheck.MODE_FAR
                         )
                     }
                 }
