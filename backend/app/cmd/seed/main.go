@@ -83,7 +83,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env envir
 		}
 		out := report{
 			DatasetID: id, Mode: "validate-only", Status: "valid",
-			Points: len(bundle.Dataset.Points), Candidates: len(bundle.Dataset.Candidates),
+			Points: bundle.Manifest.Counts.Points, Candidates: bundle.Manifest.Counts.Candidates,
 			ContentSHA256: bundle.ContentSHA256,
 		}
 		if *apply {

@@ -42,11 +42,8 @@ func parseSeedDatasetIDs(raw string) ([]string, error) {
 	return ids, nil
 }
 
-// runSeed loads and validates every requested dataset first, so a bad entry
-// stops the run before anything is written, then applies each one in order.
-// Applying is idempotent: a dataset already stored with the same content is
-// reported as unchanged.
-func runSeed(ctx context.Context, db seed.Beginner, fsys fs.FS, ids []string, out io.Writer) error {
+// loadSeedBundles validates every requested embedded dataset without touching a database.
+func loadSeedBundles(fsys fs.FS, ids []string) ([]*seed.Bundle, error) {
 	bundles := make([]*seed.Bundle, 0, len(ids))
 	for _, id := range ids {
 		bundle, err := seed.Load(fsys, id)
@@ -54,10 +51,15 @@ func runSeed(ctx context.Context, db seed.Beginner, fsys fs.FS, ids []string, ou
 			err = seed.Validate(bundle)
 		}
 		if err != nil {
-			return fmt.Errorf("seed dataset %q: %w", id, err)
+			return nil, fmt.Errorf("seed dataset %q: %w", id, err)
 		}
 		bundles = append(bundles, bundle)
 	}
+	return bundles, nil
+}
+
+// applySeedBundles applies bundles only after all requested bundles are preflighted.
+func applySeedBundles(ctx context.Context, db seed.Beginner, bundles []*seed.Bundle, out io.Writer) error {
 	for _, bundle := range bundles {
 		result, err := seed.Apply(ctx, db, bundle)
 		if err != nil {
@@ -67,4 +69,14 @@ func runSeed(ctx context.Context, db seed.Beginner, fsys fs.FS, ids []string, ou
 		fmt.Fprintln(out, string(line))
 	}
 	return nil
+}
+
+// runSeed retains the test and caller behavior while ensuring all datasets are
+// validated before the first database write.
+func runSeed(ctx context.Context, db seed.Beginner, fsys fs.FS, ids []string, out io.Writer) error {
+	bundles, err := loadSeedBundles(fsys, ids)
+	if err != nil {
+		return err
+	}
+	return applySeedBundles(ctx, db, bundles, out)
 }

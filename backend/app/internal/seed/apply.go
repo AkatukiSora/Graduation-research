@@ -2,6 +2,7 @@ package seed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -60,7 +61,12 @@ type applier struct {
 
 func (a applier) apply(ctx context.Context, db Beginner, b *Bundle) (result Result, err error) {
 	if !a.skipValidation {
-		if err := Validate(b); err != nil {
+		if b != nil && b.v2 != nil {
+			err = b.validateV2(ctx)
+		} else {
+			err = Validate(b)
+		}
+		if err != nil {
 			return Result{}, err
 		}
 	}
@@ -94,24 +100,48 @@ func (a applier) apply(ctx context.Context, db Beginner, b *Bundle) (result Resu
 		if points != b.Manifest.Counts.Points || candidates != b.Manifest.Counts.Candidates {
 			return Result{}, fmt.Errorf("%w: existing dataset %q holds %d points and %d candidates", ErrCountMismatch, id, points, candidates)
 		}
+		if b.v2 != nil {
+			if err := verifyV2StoredState(ctx, tx, b); err != nil {
+				return Result{}, fmt.Errorf("replay dataset %q: %w", id, err)
+			}
+		}
 		return Result{Status: StatusUnchanged, Points: points, Candidates: candidates}, nil
 	case errors.Is(err, pgx.ErrNoRows):
 	default:
 		return Result{}, fmt.Errorf("look up dataset %q: %w", id, err)
 	}
 
-	if _, err := tx.Exec(ctx, `INSERT INTO regulation_datasets
-		(dataset_id, content_sha256, source_month, region_id, synthetic, production_approved, provenance)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+	if b.v2 != nil {
+		provenance, err := json.Marshal(b.v2.manifest.Provenance)
+		if err != nil {
+			return Result{}, fmt.Errorf("encode v2 provenance: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO regulation_datasets
+			(dataset_id, content_sha256, source_month, region_id, synthetic, provenance)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+			id, b.Manifest.ContentSHA256, b.Manifest.SourceMonth, b.Manifest.RegionID, b.Manifest.Synthetic, provenance); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == digestUniqueKey {
+				return Result{}, fmt.Errorf("%w: dataset %q", ErrDigestInUse, id)
+			}
+			return Result{}, fmt.Errorf("insert dataset %q: %w", id, err)
+		}
+	} else if _, err := tx.Exec(ctx, `INSERT INTO regulation_datasets
+		(dataset_id, content_sha256, source_month, region_id, synthetic, provenance)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
 		id, b.Manifest.ContentSHA256, b.Manifest.SourceMonth, b.Manifest.RegionID,
-		b.Manifest.Synthetic, b.Manifest.ProductionApproved, []byte(b.Manifest.Provenance)); err != nil {
+		b.Manifest.Synthetic, []byte(b.Manifest.Provenance)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == digestUniqueKey {
 			return Result{}, fmt.Errorf("%w: dataset %q", ErrDigestInUse, id)
 		}
 		return Result{}, fmt.Errorf("insert dataset %q: %w", id, err)
 	}
-	if err := insertPoints(ctx, tx, id, b.Dataset.Points); err != nil {
+	if b.v2 != nil {
+		if err := insertV2Points(ctx, tx, b.v2, id); err != nil {
+			return Result{}, err
+		}
+	} else if err := insertPoints(ctx, tx, id, b.Dataset.Points); err != nil {
 		return Result{}, err
 	}
 	if a.afterPoints != nil {
@@ -119,7 +149,11 @@ func (a applier) apply(ctx context.Context, db Beginner, b *Bundle) (result Resu
 			return Result{}, err
 		}
 	}
-	if err := insertCandidates(ctx, tx, id, b.Dataset.Candidates); err != nil {
+	if b.v2 != nil {
+		if err := insertV2Candidates(ctx, tx, b.v2, id); err != nil {
+			return Result{}, err
+		}
+	} else if err := insertCandidates(ctx, tx, id, b.Dataset.Candidates); err != nil {
 		return Result{}, err
 	}
 
@@ -127,18 +161,28 @@ func (a applier) apply(ctx context.Context, db Beginner, b *Bundle) (result Resu
 	if err != nil {
 		return Result{}, err
 	}
-	if points != len(b.Dataset.Points) || points != b.Manifest.Counts.Points ||
-		candidates != len(b.Dataset.Candidates) || candidates != b.Manifest.Counts.Candidates {
+	expectedPoints, expectedCandidates := len(b.Dataset.Points), len(b.Dataset.Candidates)
+	if b.v2 != nil {
+		expectedPoints, expectedCandidates = b.v2.manifest.Counts.Points, b.v2.manifest.Counts.Candidates
+	}
+	if points != expectedPoints || points != b.Manifest.Counts.Points ||
+		candidates != expectedCandidates || candidates != b.Manifest.Counts.Candidates {
 		return Result{}, fmt.Errorf("%w: dataset %q stored %d points and %d candidates, manifest lists %d and %d",
 			ErrCountMismatch, id, points, candidates, b.Manifest.Counts.Points, b.Manifest.Counts.Candidates)
 	}
-	var unknown int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM regulation_points WHERE dataset_id = $1
-		AND direction_degrees IS NULL AND direction_status = 'unknown' AND validity_status = 'unknown'`, id).Scan(&unknown); err != nil {
-		return Result{}, fmt.Errorf("verify uncertainty states of %q: %w", id, err)
-	}
-	if unknown != points {
-		return Result{}, fmt.Errorf("%w: dataset %q stored %d points with known direction or validity", ErrCountMismatch, id, points-unknown)
+	if b.v2 != nil {
+		if err := verifyV2StoredState(ctx, tx, b); err != nil {
+			return Result{}, fmt.Errorf("verify v2 point state of %q: %w", id, err)
+		}
+	} else {
+		var unknown int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM regulation_points WHERE dataset_id = $1
+			AND direction_degrees IS NULL AND direction_status = 'unknown' AND validity_status = 'unknown'`, id).Scan(&unknown); err != nil {
+			return Result{}, fmt.Errorf("verify uncertainty states of %q: %w", id, err)
+		}
+		if unknown != points {
+			return Result{}, fmt.Errorf("%w: dataset %q stored %d points with known direction or validity", ErrCountMismatch, id, points-unknown)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Result{}, fmt.Errorf("commit dataset %q: %w", id, err)
@@ -194,9 +238,9 @@ func insertCandidates(ctx context.Context, tx pgx.Tx, id string, candidates []Ca
 			distances, bearings = append(distances, c.DistanceM), append(bearings, c.CandidateBearing)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO regulation_candidates
-			(dataset_id, source_entity_id, neighbor_entity_id, rank, distance_m, candidate_bearing, features, bearing_semantics, production_approved)
+			(dataset_id, source_entity_id, neighbor_entity_id, rank, distance_m, candidate_bearing, features, bearing_semantics)
 			SELECT $1::text, t.source_entity_id, t.neighbor_entity_id, t.rank, t.distance_m, t.candidate_bearing, t.features::jsonb,
-			       'candidate_point_neighbor_only', false
+			       'candidate_point_neighbor_only'
 			FROM unnest($2::text[], $3::text[], $4::int4[], $5::float8[], $6::float8[], $7::text[])
 			     AS t(source_entity_id, neighbor_entity_id, rank, distance_m, candidate_bearing, features)`,
 			id, sources, neighbors, ranks, distances, bearings, features); err != nil {

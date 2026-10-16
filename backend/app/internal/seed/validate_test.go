@@ -129,7 +129,7 @@ func TestDatasetIDsListsEmbeddedDatasets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != embeddedDatasetID {
+	if len(ids) != 2 || ids[0] != embeddedDatasetID || ids[1] != "synthetic-v2" {
 		t.Fatalf("ids = %v", ids)
 	}
 }

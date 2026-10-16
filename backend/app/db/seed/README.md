@@ -13,25 +13,30 @@
 
 ```text
 internal/seeddata/data/<dataset-id>/
-├── manifest.json   # 版・月・地域・件数・dataset.json の SHA-256・生成元・出典
-└── dataset.json    # points と candidates
+├── manifest.json                 # format/counts/digest/provenance
+├── dataset.json                  # v1 points + candidates only
+└── *.jsonl.gz                    # v2 bounded points/candidate shards
 ```
 
-現在は `synthetic-v1`（12 ポイント、58 候補、対象月 `202701`、地域 `synthetic:rectangle`）です。ファイルはビルド時にバイナリへ埋め込まれ、実行時にファイルシステムからは読み込みません。
+`synthetic-v1` は12ポイント・58候補、`synthetic-v2` は同じ合成 fixture を schema v2 の gzip JSONL shard に変換したものです。v1 のファイルとダイジェストは変更せず、v2 はロード時に全 shard を逐次検証し、ポイント／候補の全 object 配列を保持しません。いずれも合成専用で、実データ・取得証拠・推定精度の証明ではありません。データはビルド時にバイナリへ埋め込まれ、実行時はファイルシステムから読み込みません。
 
 ## 検証（データベース不要）
 
 ```sh
 cd backend/app
 go run ./cmd/seed --validate-only --dataset synthetic-v1
+go run ./cmd/seed --validate-only --dataset synthetic-v2
 ```
 
 `--dataset` を省略すると、埋め込まれたすべてのデータセットを検証します。次の項目を確認し、違反があれば理由コード付きのメッセージを表示して終了コード 1 で終了します。
 
-- マニフェストと `dataset.json` の SHA-256、件数（ポイント・候補・棄却 0・領域外 0）
+- v1 は `manifest.json` / `dataset.json`、v2 は manifest counts / 全 shard の SHA-256 と件数
 - ID と `raw_uid`（32 文字以内）の一意性、経度 [-180, 180]・緯度 [-90, 90] の有限値
 - 全ポイントが方向・有効性とも unknown で、データセットが合成かつ未承認であること
 - 候補が同じデータセット内の別ポイントを参照し、順位が 1 から連続し、距離が 0 以上、方位が [0, 360) であること
+- v2 は manifest / JSONL key と gzip / UTF-8 / LF / SHA-256 を厳密に検証し、manifest 1 MiB・行64 KiB・shard展開4 MiB・bundle展開／圧縮各64 MiB・index 128 MiBの上限を適用すること
+- v2 の source-geometry / nearest evidence は埋め込みポイント・候補と照合し、未登録の OSM 推定 method は拒否すること
+- source geometry evidence の入口座標から方位を再計算し、manifest に記録された source CSV SHA と親ポイント座標との整合を確認しますが、これは埋め込み bundle 内の自己整合性検証です。埋め込みデータだけでは、その入口座標が原本 CSV に実在したこと（出自）は証明できません。出自は、後続の実データ生成工程が原本 raw から fresh に再生成し、独立レビューで照合して確認する責務です。これらの検証は、推定方向の現地での正しさ、通知の安全性、現地確認済みであること、第三者権利の承認を意味しません。
 
 成功時は件数とダイジェストを JSON で 1 行出力します。
 
@@ -85,14 +90,18 @@ go run ./cmd/seed --apply --dataset synthetic-v1
 
 ## 埋め込みデータの再生成と確認
 
-`db/seed/synthetic/build_dataset.py` は、固定の合成 CSV（`db/seed/synthetic/input/`）を `backend/generation_io` の CLI（`prepare-input`、`generate`、`verify`）で処理し、`internal/seeddata/data/synthetic-v1/` の JSON を作ります。乱数は使用しません。
+`db/seed/synthetic/build_dataset.py` は固定の合成 CSV を generation I/O CLI で処理し、v1 fixture を作ります。`db/seed/synthetic/build_dataset_v2.py` はチェックイン済みの synthetic-v1 fixture だけを決定的に schema v2 shard へ変換します。どちらも実データを取得せず、v2 生成物には CSV / boundary / input manifest / generator / method metadata の SHA-256 と件数を記録します。
 
 ```sh
 cd backend/generation_io
 uv sync --locked --all-groups
-uv run --locked python ../app/db/seed/synthetic/build_dataset.py --check   # 再生成してバイト単位で一致を確認
-uv run --locked python ../app/db/seed/synthetic/build_dataset.py --write   # チェックイン済みファイルを更新
+uv run --locked python ../app/db/seed/synthetic/build_dataset.py --check
+cd ../app
+python3 -B db/seed/synthetic/build_dataset_v2.py --check
 ```
+
+`--write` は対象 fixture を意図的に更新するときだけ使用します。v1 と v2 の生成物はそれぞれ別の `--check` でバイト一致を確認します。
+
 
 ## API が参照するデータセット
 
@@ -108,17 +117,22 @@ API（`cmd/api`）は起動時にデータベースへ接続して疎通を確�
 ```sh
 cd backend/app
 go test ./...
-python3 db/seed/tests/run_integration.py --toolchain-report <toolchain-report.json>
-python3 internal/handler/tests/check_openapi.py --toolchain-report <toolchain-report.json>
+go vet ./...
+SCRATCH="$HOME/.cache/graduation-seed-integration"
+mkdir -p "$SCRATCH"
+python3 -B db/seed/tests/run_integration.py --toolchain-report /path/to/validated-toolchain-report.json --scratch-dir "$SCRATCH" --log "$SCRATCH/integration.log"
+python3 -B internal/handler/tests/check_openapi.py --toolchain-report /path/to/validated-toolchain-report.json
+git diff --check
 ```
 
-後者は使い捨てのローカル PostGIS クラスタを作成し、全マイグレーションを適用して `internal/seed` の統合テスト（初回投入、再投入の no-op、ダイジェスト不一致の拒否、不正データ、ロールバック、並行投入、件数照合）と `cmd/seed` の実行ファイルでの投入を検証します。さらに、実際の `migrate` 実行ファイルを空のデータベースに対して実行し（環境変数なしならスキーマ適用のみ、指定ありなら投入、再実行は `unchanged`、存在しない ID は何も書かずに失敗）、続けて、投入済みのデータに対する API のリポジトリ（半径検索と並び順、境界、方位不明の表示、ID 検索、他データセットの分離、DB 障害の扱い）と、接続ごとのパスワード解決を検証し、終了時にクラスタを停止・削除します。統合テストは `TEST_DATABASE_URL` が未設定ならスキップされ、ホストがループバックまたはローカルのソケット以外の場合は実行を拒否します。
+後者は使い捨てのローカル PostGIS クラスタを作成し、全マイグレーションを適用して、seed／API repository／接続プールの統合テストを実行します。seed では v1・v2 の初回投入と再実行、混在状態の保存・再生、後段 JSONL decode／gzip CRC／context cancellation／候補 INSERT の失敗時に行が残らないこと、並行投入と件数照合を確認します。さらに、`migrate` が v1 と v2 を同じ実行で投入・再実行し、未知 ID は書き込み前に拒否することを検証し、終了時にクラスタを停止・削除します。scratch ディレクトリと read-only の toolchain report は別のパスにしてください。統合テストは `TEST_DATABASE_URL` が未設定ならスキップされ、ホストがループバックまたはローカルのソケット以外の場合は実行を拒否します。
 
 `check_openapi.py` は、ハンドラが実際に返す JSON と `backend/docs/openapi.yaml` のプロパティ・必須項目・エラーコードの一致を確認します（データベースは不要で、PyYAML または ruamel.yaml が必要です）。
 
 ## 検証済みの範囲と未検証の範囲
 
-- 検証済み：Go の単体テスト、`--validate-only`、使い捨てのローカル PostgreSQL／PostGIS に対する統合テスト（投入・再投入、API のリポジトリ、接続ごとのパスワード解決）と `cmd/seed`・`migrate` 実行ファイルでの投入・再投入、OpenAPI とハンドラ出力の一致。
+- 検証済み：`go test ./...`、`go vet ./...`、v1 / v2 fixture の再生成チェック、v2 `--validate-only`、ローカル PostGIS 統合テスト15件（v1/v2投入・再実行を含む）、OpenAPI とハンドラ出力の一致。
+- v2 の10,000ポイント／60,000候補 fixture は、streaming load と全 object 配列を保持しないことを確認し、Linux のプロセス high-water RSS は45,104 KiB（512 MiB 未満）。
 - 未検証：コンテナイメージ（`/api`、`/migrate`）の実ビルド、AWS／RDS（IAM 認証）上での投入と実際のトークン発行、ECS タスクでの実行（`SEED_DATASET_IDS` を渡すインフラ設定は別途必要）、Lambda 上での `cmd/api` の起動、GitHub Actions での実行。
 - `run_integration.py` の `--toolchain-report` は、PostgreSQL 17 と PostGIS を展開したディレクトリ（`postgres/root`）と同じ場所に置く、ツールチェーンの記録ファイル（JSON）です。リポジトリだけでは再現できず、同等の使い捨て環境を用意する必要があります。
 - `build_dataset.py --check` が全体でバイト一致するのは、`uv.lock` で固定した環境で実行した場合です。マニフェストには実行時のライブラリ版が記録されるため、別の環境では `dataset.json` のダイジェストだけが一致します。

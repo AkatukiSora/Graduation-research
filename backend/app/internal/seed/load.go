@@ -62,14 +62,20 @@ type Manifest struct {
 
 // Point is one regulation point. Direction fields stay unknown for synthetic data.
 type Point struct {
-	EntityID            string   `json:"entity_id"`
-	RawUID              string   `json:"raw_uid"`
-	Lon                 float64  `json:"lon"`
-	Lat                 float64  `json:"lat"`
-	DirectionDegrees    *float64 `json:"direction_degrees"`
-	DirectionStatus     string   `json:"direction_status"`
-	ValidityStatus      string   `json:"validity_status"`
-	NormalizationStatus string   `json:"normalization_status"`
+	EntityID            string          `json:"entity_id"`
+	RawUID              string          `json:"raw_uid"`
+	Lon                 float64         `json:"lon"`
+	Lat                 float64         `json:"lat"`
+	DirectionDegrees    *float64        `json:"direction_degrees"`
+	DirectionStatus     string          `json:"direction_status"`
+	ImputationMethod    string          `json:"imputation_method"`
+	ImputationReason    string          `json:"imputation_reason"`
+	DirectionSource     string          `json:"direction_source"`
+	DirectionEvidence   json.RawMessage `json:"direction_evidence"`
+	ValidityStatus      string          `json:"validity_status"`
+	ValidityReason      string          `json:"validity_reason"`
+	ValidityEvidence    json.RawMessage `json:"validity_evidence"`
+	NormalizationStatus string          `json:"normalization_status"`
 }
 
 // Candidate links a point to one of its nearest neighbours.
@@ -96,6 +102,7 @@ type Bundle struct {
 	Manifest      Manifest
 	Dataset       Dataset
 	ContentSHA256 string
+	v2            *v2Source
 }
 
 // ValidDatasetID reports whether id is a safe dataset identifier.
@@ -108,11 +115,28 @@ func Load(fsys fs.FS, datasetID string) (*Bundle, error) {
 	if !ValidDatasetID(datasetID) {
 		return nil, invalid(CodeDatasetID, "dataset id %q is not a safe identifier", datasetID)
 	}
-	manifestBytes, err := readAll(fsys, path.Join(datasetID, ManifestFileName))
+	manifestPath := path.Join(datasetID, ManifestFileName)
+	manifestBytes, err := readManifest(fsys, manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("dataset %q is not available: %w", datasetID, err)
 	}
-	datasetBytes, err := readAll(fsys, path.Join(datasetID, DatasetFileName))
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(manifestBytes, &header); err != nil {
+		return nil, fmt.Errorf("decode manifest of %q: %w", datasetID, err)
+	}
+	if header.SchemaVersion == v2SchemaVersion {
+		if len(manifestBytes) > maxManifestBytes {
+			return nil, invalid(CodeCount, "v2 manifest exceeds %d bytes", maxManifestBytes)
+		}
+		return loadV2(fsys, datasetID, manifestPath, manifestBytes)
+	}
+	if header.SchemaVersion != SchemaVersion {
+		return nil, invalid(CodeSchemaVersion, "manifest version %d is not supported", header.SchemaVersion)
+	}
+	datasetPath := path.Join(datasetID, DatasetFileName)
+	datasetBytes, err := readAll(fsys, datasetPath)
 	if err != nil {
 		return nil, fmt.Errorf("dataset %q is not available: %w", datasetID, err)
 	}
@@ -145,6 +169,22 @@ func DatasetIDs(fsys fs.FS) ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+func readManifest(fsys fs.FS, name string) ([]byte, error) {
+	file, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxManifestBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxManifestBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", name, maxManifestBytes)
+	}
+	return data, nil
 }
 
 func readAll(fsys fs.FS, name string) ([]byte, error) {

@@ -60,6 +60,14 @@ func runWithRetry(ctx context.Context) error {
 }
 
 func runOnce(ctx context.Context) error {
+	seedIDs, err := parseSeedDatasetIDs(os.Getenv(seedDatasetsEnv))
+	if err != nil {
+		return err
+	}
+	bundles, err := loadSeedBundles(seeddata.FS(), seedIDs)
+	if err != nil {
+		return err
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -77,11 +85,6 @@ func runOnce(ctx context.Context) error {
 	}
 
 	password, err := db.ResolvePassword(ctx, cfg)
-	if err != nil {
-		return err
-	}
-
-	seedIDs, err := parseSeedDatasetIDs(os.Getenv(seedDatasetsEnv))
 	if err != nil {
 		return err
 	}
@@ -104,7 +107,7 @@ func runOnce(ctx context.Context) error {
 		return fmt.Errorf("run atlas migrate apply: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 
-	return runSeed(ctx, pool, seeddata.FS(), seedIDs, os.Stdout)
+	return applySeedBundles(ctx, pool, bundles, os.Stdout)
 }
 
 func fail(err error) {
