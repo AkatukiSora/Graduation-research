@@ -1,0 +1,66 @@
+{
+  "boundary_sha256": "ba9cc6cebf0481618357a6d5c143025f74d836cb206381f1383659fb97c4469a",
+  "candidates": 7454,
+  "dataset_id": "nagoya-rule-test-202602-v1",
+  "direction_status_counts": {
+    "confirmed": 0,
+    "inferred": 1866,
+    "unknown": 73
+  },
+  "entrance_count_counts": {
+    "0": 1939
+  },
+  "excluded_non_stop": 383211,
+  "imputation_method_counts": {
+    "field_observation": 0,
+    "nearest_stop_reference": 1866,
+    "none": 73,
+    "osm_fusion_cautious": 0,
+    "source_entrance_geometry": 0
+  },
+  "imputation_reason_counts": {
+    "ambiguous_nearest_neighbor": 4,
+    "legacy_unrecorded": 0,
+    "missing_entrance_coordinates": 0,
+    "model_direction_inference": 0,
+    "multiple_entrance_directions": 0,
+    "no_neighbor_within_radius": 65,
+    "none": 0,
+    "source_geometry_derived": 0,
+    "source_identity_unverified": 0,
+    "topology_only_unverified": 0,
+    "topology_proxy_unverified": 1866,
+    "unsupported_entrance_geometry": 0,
+    "zero_length_geometry": 4
+  },
+  "inferred_ratio": 0.962351727694688,
+  "input_manifest_sha256": "61128f4971c9ea5052f2008188ecb2b87a011516f43a7ce12d440b5211ba6e31",
+  "limitations": [
+    "Direction is a synthetic stop-to-neighbor proxy, not a verified vehicle approach direction.",
+    "Validity remains unknown; no confirmed direction, ground-truth accuracy, or notification safety is claimed.",
+    "Coordinates derive from the JARTIC 202602 source; synthetic=true marks this test-only derived dataset and its proxy directions.",
+    "Historical acquisition time and acquisition-time terms are unknown; current terms are not historical evidence."
+  ],
+  "outside_region": 166713,
+  "points": 1939,
+  "region_id": "jp:aichi:nkc-2km",
+  "rejected": 0,
+  "rows_total": 551863,
+  "schema_version": 1,
+  "source_csv_bytes": 363440778,
+  "source_csv_sha256": "0d902b472980d40fa7b472998e3424c73ad4730108fac9655ac1b23e82ee573d",
+  "source_month": "202602",
+  "source_zip_sha256": "f12388fca9283f0abd9104a3b265f88caac56f43a9add92404d22a34de0e6ea5",
+  "validity_reason_counts": {
+    "active_regulation_evidence": 0,
+    "legacy_unrecorded": 0,
+    "source_validity_unverified": 1939,
+    "synthetic_fixture": 0,
+    "withdrawn_regulation_evidence": 0
+  },
+  "validity_status_counts": {
+    "invalid": 0,
+    "unknown": 1939,
+    "valid": 0
+  }
+}

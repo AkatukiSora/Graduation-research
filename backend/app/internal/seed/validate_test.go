@@ -129,7 +129,7 @@ func TestDatasetIDsListsEmbeddedDatasets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 2 || ids[0] != embeddedDatasetID || ids[1] != "synthetic-v2" {
+	if len(ids) != 3 || ids[0] != "nagoya-rule-test-202602-v1" || ids[1] != embeddedDatasetID || ids[2] != "synthetic-v2" {
 		t.Fatalf("ids = %v", ids)
 	}
 }

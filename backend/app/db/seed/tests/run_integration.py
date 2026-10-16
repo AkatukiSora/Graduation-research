@@ -25,6 +25,7 @@ SCHEMA_TESTS = APP_DIR / "db" / "schema" / "tests" / "validate_schema.py"
 MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 SEED_CLI_DATASET = "synthetic-v1"
 SEED_CLI_V2_DATASET = "synthetic-v2"
+SEED_CLI_RULE_TEST_DATASET = "nagoya-rule-test-202602-v1"
 
 
 def load_cluster_class():
@@ -104,6 +105,11 @@ def main():
     if scratch_dir is not None and (scratch_dir.is_relative_to(report_path.parent) or report_path.is_relative_to(scratch_dir)):
         sys.exit("scratch directory must be separate from the read-only toolchain report directory")
     report = json.loads(report_path.read_text())
+    rule_manifest_path = APP_DIR / "internal" / "seeddata" / "data" / SEED_CLI_RULE_TEST_DATASET / "manifest.json"
+    rule_manifest = json.loads(rule_manifest_path.read_text())
+    rule_counts = rule_manifest["counts"]
+    if rule_manifest.get("dataset_id") != SEED_CLI_RULE_TEST_DATASET or rule_manifest.get("provenance", {}).get("data_purpose") != "rule_test":
+        sys.exit("embedded rule_test manifest identity or purpose mismatch")
     if report.get("status") != "validated_stopped":
         sys.exit("toolchain report is not a validated local toolchain")
     go = report["go_binary"]
@@ -168,6 +174,35 @@ def main():
         assert v2_flags == "true,false", v2_flags
         assert v2_states == "12,0", v2_states
 
+        rule_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_RULE_TEST_DATASET)
+        assert rule_first.returncode == 0 and '"status":"inserted"' in rule_first.stdout, rule_first.stdout + rule_first.stderr
+        rule_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_RULE_TEST_DATASET)
+        assert rule_replay.returncode == 0 and '"status":"unchanged"' in rule_replay.stdout, rule_replay.stdout + rule_replay.stderr
+        rule_counts_text = psql_scalar(db, f"SELECT (SELECT count(*) FROM regulation_datasets WHERE dataset_id='{SEED_CLI_RULE_TEST_DATASET}')||','||"
+                                           f"(SELECT count(*) FROM regulation_points WHERE dataset_id='{SEED_CLI_RULE_TEST_DATASET}')||','||"
+                                           f"(SELECT count(*) FROM regulation_candidates WHERE dataset_id='{SEED_CLI_RULE_TEST_DATASET}')")
+        rule_flags = psql_scalar(db, f"SELECT synthetic::text||','||production_approved::text FROM regulation_datasets"
+                                     f" WHERE dataset_id='{SEED_CLI_RULE_TEST_DATASET}'")
+        rule_states = psql_scalar(db, f"SELECT count(*) FILTER (WHERE direction_status='inferred')||','||"
+                                      f"count(*) FILTER (WHERE direction_status='unknown')||','||"
+                                      f"count(*) FILTER (WHERE direction_status='confirmed')||','||"
+                                      f"count(*) FILTER (WHERE validity_status='unknown')||','||"
+                                      f"count(*) FILTER (WHERE direction_status='inferred' AND direction_evidence->>'direction_semantics'='stop_to_neighbor_proxy')||','||"
+                                      f"count(*) FILTER (WHERE validity_status<>'unknown') FROM regulation_points"
+                                      f" WHERE dataset_id='{SEED_CLI_RULE_TEST_DATASET}'")
+        expected_rule_counts = f"1,{rule_counts['points']},{rule_counts['candidates']}"
+        expected_rule_states = ",".join(str(value) for value in (
+            rule_counts["direction_status_counts"]["inferred"],
+            rule_counts["direction_status_counts"]["unknown"],
+            rule_counts["direction_status_counts"]["confirmed"],
+            rule_counts["validity_status_counts"]["unknown"],
+            rule_counts["direction_status_counts"]["inferred"],
+            rule_counts["validity_status_counts"]["valid"] + rule_counts["validity_status_counts"]["invalid"],
+        ))
+        assert rule_counts_text == expected_rule_counts, rule_counts_text
+        assert rule_flags == "true,false", rule_flags
+        assert rule_states == expected_rule_states, rule_states
+
         # The API repository reads the dataset the CLI just applied.
         repo_tests = run([go, "test", "./internal/repository/postgres/...", "-run", "Integration", "-count=1", "-v"],
                          dict(env, TEST_DATABASE_URL=url))
@@ -193,7 +228,10 @@ def main():
         assert len(pool_passed) >= 1 and not pool_skipped, pool_tests.stdout
         summary["pool_integration_tests_passed"] = len(pool_passed)
         summary.update(cli_apply=json.loads(first.stdout), cli_replay=json.loads(replay.stdout),
-                       cli_counts_datasets_points_candidates=counts, cli_flags_synthetic_production=flags)
+                       cli_counts_datasets_points_candidates=counts, cli_flags_synthetic_production=flags,
+                       rule_test_cli_apply=json.loads(rule_first.stdout), rule_test_cli_replay=json.loads(rule_replay.stdout),
+                       rule_test_counts_datasets_points_candidates=rule_counts_text,
+                       rule_test_flags_synthetic_production=rule_flags, rule_test_state_and_evidence_counts=rule_states)
 
         # Re-run both seed formats after dropping only the approval columns in a
         # separate disposable database, matching the post-contract seed schema.
@@ -213,15 +251,20 @@ def main():
         compat_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_DATASET, database="gr9_seed_no_approval")
         compat_v2_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET, database="gr9_seed_no_approval")
         compat_v2_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET, database="gr9_seed_no_approval")
+        compat_rule_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_RULE_TEST_DATASET, database="gr9_seed_no_approval")
+        compat_rule_replay = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_RULE_TEST_DATASET, database="gr9_seed_no_approval")
         assert compat_first.returncode == 0 and '"status":"inserted"' in compat_first.stdout, compat_first.stdout + compat_first.stderr
         assert compat_replay.returncode == 0 and '"status":"unchanged"' in compat_replay.stdout, compat_replay.stdout + compat_replay.stderr
         assert compat_v2_first.returncode == 0 and '"status":"inserted"' in compat_v2_first.stdout, compat_v2_first.stdout + compat_v2_first.stderr
         assert compat_v2_replay.returncode == 0 and '"status":"unchanged"' in compat_v2_replay.stdout, compat_v2_replay.stdout + compat_v2_replay.stderr
+        assert compat_rule_first.returncode == 0 and '"status":"inserted"' in compat_rule_first.stdout, compat_rule_first.stdout + compat_rule_first.stderr
+        assert compat_rule_replay.returncode == 0 and '"status":"unchanged"' in compat_rule_replay.stdout, compat_rule_replay.stdout + compat_rule_replay.stderr
         compat_counts = psql_scalar(db, "SELECT (SELECT count(*) FROM regulation_datasets)||','||"
                                         "(SELECT count(*) FROM regulation_points)||','||"
                                         "(SELECT count(*) FROM regulation_candidates)", database="gr9_seed_no_approval")
-        assert compat_counts == "2,24,116", compat_counts
-        summary.update(seed_without_approval_columns="v1/v2 insert and replay passed", no_approval_counts=compat_counts)
+        expected_compat_counts = f"3,{24 + rule_counts['points']},{116 + rule_counts['candidates']}"
+        assert compat_counts == expected_compat_counts, compat_counts
+        summary.update(seed_without_approval_columns="v1/v2/rule_test insert and replay passed", no_approval_counts=compat_counts)
 
         # The deployed path: migrate applies the schema to an empty database
         # and then seeds the datasets named in SEED_DATASET_IDS.
@@ -246,18 +289,19 @@ def main():
         assert empty.returncode == 0, empty.stdout + empty.stderr
         assert table_count("gr9_migrate_empty", "regulation_datasets") == "0", "empty seed list must perform no writes"
 
-        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET}"
+        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET},{SEED_CLI_RULE_TEST_DATASET}"
         seeded = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
-        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 2, seeded.stdout + seeded.stderr
+        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 3, seeded.stdout + seeded.stderr
         again = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
         seeded_rows = json_lines(seeded.stdout)
         replay_rows = json_lines(again.stdout)
-        assert len(seeded_rows) == 2 and {row["dataset_id"] for row in seeded_rows} == {SEED_CLI_DATASET, SEED_CLI_V2_DATASET}
-        assert len(replay_rows) == 2 and {row["dataset_id"] for row in replay_rows} == {SEED_CLI_DATASET, SEED_CLI_V2_DATASET}
+        expected_dataset_ids = {SEED_CLI_DATASET, SEED_CLI_V2_DATASET, SEED_CLI_RULE_TEST_DATASET}
+        assert len(seeded_rows) == 3 and {row["dataset_id"] for row in seeded_rows} == expected_dataset_ids
+        assert len(replay_rows) == 3 and {row["dataset_id"] for row in replay_rows} == expected_dataset_ids
         assert all(row["status"] == "inserted" for row in seeded_rows)
         assert all(row["status"] == "unchanged" for row in replay_rows)
-        assert table_count("gr9_migrate_seed", "regulation_points") == "24"
-        assert table_count("gr9_migrate_seed", "regulation_candidates") == "116"
+        assert table_count("gr9_migrate_seed", "regulation_points") == str(24 + rule_counts["points"])
+        assert table_count("gr9_migrate_seed", "regulation_candidates") == str(116 + rule_counts["candidates"])
 
         # Unknown IDs must fail even when DB_HOST points at an unavailable local
         # port, proving preflight precedes database pool creation and Atlas.

@@ -7,12 +7,22 @@ SELECT
     p.direction_degrees,
     p.direction_status,
     p.validity_status,
-    p.created_at,
-    p.updated_at,
+    p.imputation_method,
+    p.imputation_reason,
+    p.direction_source,
+    p.direction_evidence,
+    p.validity_reason,
+    p.validity_evidence,
     d.dataset_id,
     d.source_month,
     d.synthetic,
-    d.production_approved
+    CASE
+        WHEN d.provenance->>'data_purpose' = 'rule_test' THEN 'rule_test'
+        WHEN d.synthetic THEN 'synthetic_fixture'
+        ELSE 'observational'
+    END AS data_purpose,
+    p.created_at,
+    p.updated_at
 FROM regulation_points AS p
 JOIN regulation_datasets AS d ON d.dataset_id = p.dataset_id
 WHERE p.dataset_id = sqlc.arg(dataset_id)::text
@@ -28,10 +38,20 @@ SELECT
     p.direction_degrees,
     p.direction_status,
     p.validity_status,
+    p.imputation_method,
+    p.imputation_reason,
+    p.direction_source,
+    p.direction_evidence,
+    p.validity_reason,
+    p.validity_evidence,
     d.dataset_id,
     d.source_month,
     d.synthetic,
-    d.production_approved
+    CASE
+        WHEN d.provenance->>'data_purpose' = 'rule_test' THEN 'rule_test'
+        WHEN d.synthetic THEN 'synthetic_fixture'
+        ELSE 'observational'
+    END AS data_purpose
 FROM regulation_points AS p
 JOIN regulation_datasets AS d ON d.dataset_id = p.dataset_id
 WHERE p.dataset_id = sqlc.arg(dataset_id)::text

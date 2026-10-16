@@ -33,17 +33,22 @@ type StopPointHandlers struct {
 
 // stopPointRangeResponse is one list item. az is null while the direction is unknown.
 type stopPointRangeResponse struct {
-	UniqueKey            string  `json:"uniqueKey"`
-	AZ                   *string `json:"az"`
-	Latitude             string  `json:"lat"`
-	Longitude            string  `json:"long"`
-	DirectionStatus      string  `json:"directionStatus"`
-	ValidityStatus       string  `json:"validityStatus"`
-	Synthetic            bool    `json:"synthetic"`
-	ProductionApproved   bool    `json:"productionApproved"`
-	DatasetID            string  `json:"datasetId"`
-	SourceMonth          string  `json:"sourceMonth"`
-	NotificationEligible bool    `json:"notificationEligible"`
+	UniqueKey         string          `json:"uniqueKey"`
+	AZ                *string         `json:"az"`
+	Latitude          string          `json:"lat"`
+	Longitude         string          `json:"long"`
+	DirectionStatus   string          `json:"directionStatus"`
+	ValidityStatus    string          `json:"validityStatus"`
+	Synthetic         bool            `json:"synthetic"`
+	DatasetID         string          `json:"datasetId"`
+	SourceMonth       string          `json:"sourceMonth"`
+	ImputationMethod  string          `json:"imputationMethod"`
+	ImputationReason  string          `json:"imputationReason"`
+	DirectionSource   string          `json:"directionSource"`
+	DirectionEvidence json.RawMessage `json:"directionEvidence"`
+	ValidityReason    string          `json:"validityReason"`
+	ValidityEvidence  json.RawMessage `json:"validityEvidence"`
+	DataPurpose       string          `json:"dataPurpose"`
 }
 
 type stopPointDetailResponse struct {
@@ -169,17 +174,15 @@ func toStopPointRangeResponse(stopPoint domain.StopPoint) stopPointRangeResponse
 	}
 
 	return stopPointRangeResponse{
-		UniqueKey:            stopPoint.UniqueKey,
-		AZ:                   az,
-		Latitude:             strconv.FormatFloat(stopPoint.Latitude, 'f', -1, 64),
-		Longitude:            strconv.FormatFloat(stopPoint.Longitude, 'f', -1, 64),
-		DirectionStatus:      stopPoint.DirectionStatus,
-		ValidityStatus:       stopPoint.ValidityStatus,
-		Synthetic:            stopPoint.Synthetic,
-		ProductionApproved:   stopPoint.ProductionApproved,
-		DatasetID:            stopPoint.DatasetID,
-		SourceMonth:          stopPoint.SourceMonth,
-		NotificationEligible: stopPoint.NotificationEligible(),
+		UniqueKey: stopPoint.UniqueKey, AZ: az,
+		Latitude: strconv.FormatFloat(stopPoint.Latitude, 'f', -1, 64),
+		Longitude: strconv.FormatFloat(stopPoint.Longitude, 'f', -1, 64),
+		DirectionStatus: stopPoint.DirectionStatus, ValidityStatus: stopPoint.ValidityStatus,
+		Synthetic: stopPoint.Synthetic, DatasetID: stopPoint.DatasetID, SourceMonth: stopPoint.SourceMonth,
+		ImputationMethod: stopPoint.ImputationMethod, ImputationReason: stopPoint.ImputationReason,
+		DirectionSource: stopPoint.DirectionSource, DirectionEvidence: stopPoint.DirectionEvidence,
+		ValidityReason: stopPoint.ValidityReason, ValidityEvidence: stopPoint.ValidityEvidence,
+		DataPurpose: stopPoint.DataPurpose,
 	}
 }
 

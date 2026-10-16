@@ -8,7 +8,15 @@ info:
     地点は PostgreSQL (PostGIS) に投入された規制データセットのうち、
     設定 STOP_POINT_DATASET_ID で指定した 1 つの版だけから返す。
     方位 (az) が不明な地点は az を null で返し、directionStatus / validityStatus /
-    synthetic / productionApproved / notificationEligible で確実性を明示する。
+    synthetic と、方向・有効性の根拠および dataPurpose を返す。通知可否はこの API では判定しない。
+    dataPurpose=rule_test は、JARTIC 愛知県警 2026年02月分に由来する地点へ
+    最近傍地点 proxy の仮方位を付けたテストデータを示す。方向は stop_to_neighbor_proxy であり、
+    実道路の進行・接近方向、規制の現行性、通知安全性を保証しない。有効性は unknown のままとする。
+    出典は公益財団法人日本道路交通情報センター (https://www.jartic.or.jp/service/opendata/)、
+    利用条件の参照先は https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf。
+    原取得日時と取得時点の規約は不明で、参照中の規約は当時の適用条件の証拠ではない。
+    この API のデータを公開する場合は、応答版に一致する完全な immutable bundle と notice の取得先を併記する。
+    この変更は bundle の生成・公開や download 提供を行わない。
 servers:
   - url: https://api.example.com
 tags:
@@ -70,7 +78,7 @@ paths:
                 $ref: "#/components/schemas/StopPointRangeResponse"
               examples:
                 syntheticUnknownDirection:
-                  summary: 仮データの地点。方位は不明で通知対象ではない。
+                  summary: 合成データ。方位と有効性は未確認。
                   value:
                     - uniqueKey: "SYNTHETIC00000000000000000000001"
                       az: null
@@ -79,10 +87,15 @@ paths:
                       directionStatus: unknown
                       validityStatus: unknown
                       synthetic: true
-                      productionApproved: false
                       datasetId: synthetic-v1
                       sourceMonth: "202701"
-                      notificationEligible: false
+                      imputationMethod: none
+                      imputationReason: missing_entrance_coordinates
+                      directionSource: unknown
+                      directionEvidence: {}
+                      validityReason: synthetic_fixture
+                      validityEvidence: {}
+                      dataPurpose: synthetic_fixture
         "400":
           description: Invalid query
           content:
@@ -145,10 +158,15 @@ paths:
                     directionStatus: unknown
                     validityStatus: unknown
                     synthetic: true
-                    productionApproved: false
                     datasetId: synthetic-v1
                     sourceMonth: "202701"
-                    notificationEligible: false
+                    imputationMethod: none
+                    imputationReason: missing_entrance_coordinates
+                    directionSource: unknown
+                    directionEvidence: {}
+                    validityReason: synthetic_fixture
+                    validityEvidence: {}
+                    dataPurpose: synthetic_fixture
                     created_at: "2026-10-13T01:02:03.456789Z"
                     updated_at: "2026-10-13T01:02:03.456789Z"
         "404":
@@ -264,10 +282,15 @@ components:
         - directionStatus
         - validityStatus
         - synthetic
-        - productionApproved
         - datasetId
         - sourceMonth
-        - notificationEligible
+        - imputationMethod
+        - imputationReason
+        - directionSource
+        - directionEvidence
+        - validityReason
+        - validityEvidence
+        - dataPurpose
       properties:
         uniqueKey:
           type: string
@@ -299,10 +322,6 @@ components:
           type: boolean
           description: 合成された仮データの地点かどうか。
           example: true
-        productionApproved:
-          type: boolean
-          description: データセットが本番利用として承認されているかどうか。
-          example: false
         datasetId:
           type: string
           description: 地点を含むデータセットの版。
@@ -311,13 +330,37 @@ components:
           type: string
           description: データセットの元データの年月 (YYYYMM)。
           example: "202701"
-        notificationEligible:
-          type: boolean
-          description: >
-            通知に使ってよい地点かどうか。保存値ではなく導出値で、
-            データセットが本番承認済みかつ合成でなく、directionStatus が confirmed、
-            validityStatus が valid のときだけ true。
-          example: false
+        imputationMethod:
+          type: string
+          description: 方位値の生成・採用方法。none は未推定を表す。
+          example: none
+        imputationReason:
+          type: string
+          description: 方位が未確定または推定された理由。
+          example: missing_entrance_coordinates
+        directionSource:
+          type: string
+          description: 方位情報の出典種別。
+          example: unknown
+        directionEvidence:
+          type: object
+          description: サニタイズ済みの方向根拠。内容は directionStatus と imputationMethod に従う。
+          additionalProperties: true
+          example: {}
+        validityReason:
+          type: string
+          description: 有効性の確認理由。
+          example: synthetic_fixture
+        validityEvidence:
+          type: object
+          description: サニタイズ済みの有効性根拠。
+          additionalProperties: true
+          example: {}
+        dataPurpose:
+          type: string
+          enum: [observational, synthetic_fixture, rule_test]
+          description: データの用途。rule_test の近傍方位は stop_to_neighbor_proxy で、進行方向や通知安全性を示さない。
+          example: synthetic_fixture
 
     StopPointRangeResponse:
       type: array

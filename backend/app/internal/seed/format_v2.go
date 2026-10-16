@@ -16,6 +16,9 @@ import (
 
 const (
 	v2SchemaVersion            = 2
+	ruleTestDataPurpose         = "rule_test"
+	ruleTestRightsStatus        = "owner-accepted-jartic-rule-test"
+	ruleTestMethodVersion       = "nagoya-nearest-rule-test-v1"
 	maxManifestBytes           = 1 << 20
 	maxJSONLLineBytes          = 64 << 10
 	maxShardUncompressedSize   = 4 << 20
@@ -92,17 +95,18 @@ type v2Generator struct {
 }
 
 type v2Provenance struct {
-	Dataset            string `json:"dataset"`
-	Publisher          string `json:"publisher"`
-	Edition            string `json:"edition"`
-	SourceURL          string `json:"source_url"`
-	TermsReference     string `json:"terms_reference"`
-	TermsSHA256        string `json:"terms_sha256"`
-	RightsStatus       string `json:"rights_status"`
-	Attribution        string `json:"attribution"`
-	ModificationNotice string `json:"modification_notice"`
-	IdentityScope      string `json:"identity_scope"`
-	SourceIdentityNote string `json:"source_identity_note"`
+	Dataset            string  `json:"dataset"`
+	Publisher          string  `json:"publisher"`
+	Edition            string  `json:"edition"`
+	SourceURL          string  `json:"source_url"`
+	TermsReference     string  `json:"terms_reference"`
+	TermsSHA256        string  `json:"terms_sha256"`
+	RightsStatus       string  `json:"rights_status"`
+	Attribution        string  `json:"attribution"`
+	ModificationNotice string  `json:"modification_notice"`
+	IdentityScope      string  `json:"identity_scope"`
+	SourceIdentityNote string  `json:"source_identity_note"`
+	DataPurpose        *string `json:"data_purpose,omitempty"`
 }
 
 type v2File struct {
@@ -383,6 +387,10 @@ func consumeJSONValue(decoder *json.Decoder) error {
 	}
 }
 
+func (m *v2Manifest) isRuleTest() bool {
+	return m != nil && m.Provenance.DataPurpose != nil && *m.Provenance.DataPurpose == ruleTestDataPurpose
+}
+
 func validateV2Manifest(m *v2Manifest, canonicalDigest string) error {
 	if m.SchemaVersion != v2SchemaVersion {
 		return invalid(CodeSchemaVersion, "v2 manifest schema_version must be %d", v2SchemaVersion)
@@ -398,6 +406,13 @@ func validateV2Manifest(m *v2Manifest, canonicalDigest string) error {
 	}
 	if !v2DigestPattern.MatchString(m.ContentSHA256) || m.ContentSHA256 != canonicalDigest {
 		return invalid(CodeHash, "canonical manifest digest mismatch")
+	}
+	ruleTest := m.Provenance.DataPurpose != nil
+	if ruleTest && *m.Provenance.DataPurpose != ruleTestDataPurpose {
+		return invalid(CodeProvenance, "data_purpose must be %q when present", ruleTestDataPurpose)
+	}
+	if ruleTest && !m.Synthetic {
+		return invalid(CodeSynthetic, "rule_test data_purpose requires synthetic=true")
 	}
 	if m.Counts.Points <= 0 || m.Counts.Points > maxV2Points || m.Counts.Candidates < 0 || m.Counts.Candidates > maxV2Candidates ||
 		m.Counts.Rejected < 0 || m.Counts.OutsideRegion < 0 || m.Counts.RowsTotal < 0 || m.Counts.ExcludedNonStop < 0 {
@@ -442,9 +457,14 @@ func validateV2Manifest(m *v2Manifest, canonicalDigest string) error {
 	if m.Inputs.EnrichmentSHA256 != nil && !v2DigestPattern.MatchString(*m.Inputs.EnrichmentSHA256) {
 		return invalid(CodeProvenance, "enrichment_sha256 must be a digest when present")
 	}
+	wantSelectionOrder := []string{"source_entrance_geometry", "nearest_stop_reference", "unknown"}
+	if ruleTest {
+		wantSelectionOrder = []string{"nearest_stop_reference", "unknown"}
+	}
 	if m.Generator.CodeRef == "" || !v2DigestPattern.MatchString(m.Generator.CodeSHA256) ||
 		!v2DigestPattern.MatchString(m.Generator.MethodImplementationSHA256) || m.Generator.MethodVersion == "" ||
-		!equalStrings(m.Generator.SourceSelectionOrder, []string{"source_entrance_geometry", "nearest_stop_reference", "unknown"}) ||
+		ruleTest && m.Generator.MethodVersion != ruleTestMethodVersion ||
+		!equalStrings(m.Generator.SourceSelectionOrder, wantSelectionOrder) ||
 		m.Generator.Commit == "" || !v2DigestPattern.MatchString(m.Generator.UVLockSHA256) || m.Generator.PythonVersion == "" || m.Generator.ZlibVersion == "" ||
 		m.Generator.Kernel == "" || m.Generator.MaxCandidates != 6 || m.Generator.CandidateRadiusM != 80 ||
 		len(m.Generator.DependencyVersions) == 0 || len(m.Generator.ThreadPolicy) == 0 {
@@ -455,7 +475,17 @@ func validateV2Manifest(m *v2Manifest, canonicalDigest string) error {
 		m.Provenance.IdentityScope != "source_month" || m.Provenance.SourceIdentityNote == "" {
 		return invalid(CodeProvenance, "provenance metadata is incomplete")
 	}
-	if m.Synthetic && m.Provenance.RightsStatus != SyntheticRightsStatus {
+	if ruleTest {
+		if m.Provenance.RightsStatus != ruleTestRightsStatus || m.Inputs.SourceZIPSHA256 == nil || m.Provenance.SourceURL == "" ||
+			!v2DigestPattern.MatchString(m.Provenance.TermsSHA256) || m.Inputs.EnrichmentSHA256 != nil {
+			return invalid(CodeProvenance, "rule_test provenance requires accepted JARTIC rights, source ZIP, source URL, terms digest and no enrichment digest")
+		}
+		for _, file := range m.Files {
+			if file.Kind == "evidence" {
+				return invalid(CodeProvenance, "rule_test bundles must not contain evidence artifacts")
+			}
+		}
+	} else if m.Synthetic && m.Provenance.RightsStatus != SyntheticRightsStatus {
 		return invalid(CodeProvenance, "synthetic rights_status must be %q", SyntheticRightsStatus)
 	}
 	if !m.Synthetic && (!v2DigestPattern.MatchString(m.Provenance.TermsSHA256) || m.Provenance.SourceURL == "") {
