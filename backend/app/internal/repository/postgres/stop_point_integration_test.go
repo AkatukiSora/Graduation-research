@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -23,7 +24,10 @@ import (
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/seeddata"
 )
 
-const syntheticDatasetID = "synthetic-v1"
+const (
+	syntheticDatasetID      = "synthetic-v1"
+	nagoyaRuleTestDatasetID = "nagoya-rule-test-202602-v1"
+)
 
 // checkLocalDSN accepts only connection strings whose every host is a local
 // Unix socket directory or a loopback address.
@@ -270,7 +274,7 @@ func TestIntegrationRangeRadiusBoundary(t *testing.T) {
 	}
 }
 
-func TestIntegrationSyntheticPointsExposeUnknownDirectionAndNoEligibility(t *testing.T) {
+func TestIntegrationSyntheticPointsExposeUnknownEvidenceAndPurpose(t *testing.T) {
 	pool, bundle := seededPool(t)
 	repo := NewStopPointRepository(pool, syntheticDatasetID)
 	center := bundle.Dataset.Points[0]
@@ -283,11 +287,13 @@ func TestIntegrationSyntheticPointsExposeUnknownDirectionAndNoEligibility(t *tes
 		if p.AZ != nil || p.DirectionStatus != "unknown" || p.ValidityStatus != "unknown" {
 			t.Fatalf("%s: az=%v direction=%s validity=%s", p.UniqueKey, p.AZ, p.DirectionStatus, p.ValidityStatus)
 		}
-		if !p.Synthetic || p.ProductionApproved || p.DatasetID != syntheticDatasetID || p.SourceMonth != bundle.Manifest.SourceMonth {
+		if !p.Synthetic || p.DatasetID != syntheticDatasetID || p.SourceMonth != bundle.Manifest.SourceMonth || p.DataPurpose != "synthetic_fixture" {
 			t.Fatalf("%s: dataset fields = %+v", p.UniqueKey, p)
 		}
-		if p.NotificationEligible() {
-			t.Fatalf("%s: synthetic data must never be eligible for notification", p.UniqueKey)
+		if p.ImputationMethod != "none" || p.ImputationReason != "legacy_unrecorded" ||
+			p.DirectionSource != "unknown" || string(p.DirectionEvidence) != "{}" ||
+			p.ValidityReason != "legacy_unrecorded" || string(p.ValidityEvidence) != "{}" {
+			t.Fatalf("%s: evidence fields = %+v", p.UniqueKey, p)
 		}
 	}
 }
@@ -391,35 +397,96 @@ func TestIntegrationRangeOrdersEqualDistancesByEntityID(t *testing.T) {
 	}
 }
 
-func TestIntegrationNotificationEligibilityIsDerivedFromStoredState(t *testing.T) {
+func TestIntegrationRuleTestPurposeAndDirectionEvidenceAreReturned(t *testing.T) {
 	pool := newTestPool(t)
-	degrees := 90.0
-	dataset := insertScratchDataset(t, pool, false, true, []scratchPoint{
-		{entity: "e:confirmed", raw: "CONFIRMED-VALID", lon: 30, lat: 30, degrees: &degrees, direction: "confirmed", validity: "valid"},
-		{entity: "e:inferred", raw: "INFERRED-VALID", lon: 30, lat: 30, degrees: &degrees, direction: "inferred", validity: "valid"},
-		{entity: "e:invalid", raw: "CONFIRMED-INVALID", lon: 30, lat: 30, degrees: &degrees, direction: "confirmed", validity: "invalid"},
-		{entity: "e:unknown", raw: "UNKNOWN", lon: 30, lat: 30, direction: "unknown", validity: "unknown"},
+	ctx := context.Background()
+	dataset := insertScratchDataset(t, pool, true, false, []scratchPoint{
+		{entity: "e:rule", raw: "RULE-TEST-POINT", lon: 30, lat: 30, direction: "unknown", validity: "unknown"},
+		{entity: "e:neighbor", raw: "RULE-TEST-NEIGHBOR", lon: 30.0001, lat: 30, direction: "unknown", validity: "unknown"},
 	})
+	if _, err := pool.Exec(ctx, `UPDATE regulation_datasets SET provenance='{"data_purpose":"rule_test"}'::jsonb WHERE dataset_id=$1`, dataset); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE regulation_points SET
+		direction_degrees=90, direction_status='inferred', imputation_method='nearest_stop_reference',
+		imputation_reason='topology_proxy_unverified', direction_source='nearest_stop',
+		direction_evidence=jsonb_build_object(
+			'schema_version', 2, 'kind', 'nearest_stop_reference',
+			'source_csv_sha256', repeat('a', 64), 'method_version', 'nearest-stop-proxy-v1',
+			'direction_semantics', 'stop_to_neighbor_proxy', 'neighbor_entity_id', 'e:neighbor', 'candidate_rank', 1),
+		validity_reason='source_validity_unverified'
+		WHERE dataset_id=$1 AND raw_uid='RULE-TEST-POINT'`, dataset); err != nil {
+		t.Fatal(err)
+	}
+
 	repo := NewStopPointRepository(pool, dataset)
-	want := map[string]bool{"CONFIRMED-VALID": true, "INFERRED-VALID": false, "CONFIRMED-INVALID": false, "UNKNOWN": false}
-	for raw, eligible := range want {
-		detail, found, err := repo.FindByID(context.Background(), raw)
-		if err != nil || !found {
-			t.Fatalf("%s: found = %t, err = %v", raw, found, err)
-		}
-		if detail.NotificationEligible() != eligible {
-			t.Fatalf("%s: eligible = %t, want %t", raw, detail.NotificationEligible(), eligible)
-		}
-		if !detail.ProductionApproved || detail.Synthetic {
-			t.Fatalf("%s: dataset flags not read from the database: %+v", raw, detail)
-		}
-		if raw == "UNKNOWN" && detail.AZ != nil {
-			t.Fatalf("unknown direction must have no azimuth, got %v", *detail.AZ)
-		}
-		if raw == "CONFIRMED-VALID" && (detail.AZ == nil || *detail.AZ != 90) {
-			t.Fatalf("confirmed azimuth = %v", detail.AZ)
+	detail, found, err := repo.FindByID(ctx, "RULE-TEST-POINT")
+	if err != nil || !found {
+		t.Fatalf("found=%t err=%v", found, err)
+	}
+	if detail.DataPurpose != "rule_test" || detail.ImputationMethod != "nearest_stop_reference" ||
+		detail.ImputationReason != "topology_proxy_unverified" || detail.DirectionSource != "nearest_stop" ||
+		detail.ValidityReason != "source_validity_unverified" || len(detail.DirectionEvidence) == 0 || string(detail.ValidityEvidence) != "{}" {
+		t.Fatalf("rule-test detail omitted evidence/purpose: %+v", detail)
+	}
+	var evidence map[string]any
+	if err := json.Unmarshal(detail.DirectionEvidence, &evidence); err != nil || evidence["direction_semantics"] != "stop_to_neighbor_proxy" {
+		t.Fatalf("direction evidence is not the stored JSON object: %s err=%v", detail.DirectionEvidence, err)
+	}
+	rangePoints, err := repo.FindByRange(ctx, domain.GetStopPointsByRangeInput{Latitude: 30, Longitude: 30, RadiusMeters: 1000, Limit: 10})
+	if err != nil || len(rangePoints) != 2 || rangePoints[0].DataPurpose != "rule_test" {
+		t.Fatalf("range = %+v err=%v", rangePoints, err)
+	}
+}
+
+func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsProvenance(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	bundle, err := seed.Load(seeddata.FS(), nagoyaRuleTestDatasetID)
+	if err != nil {
+		t.Fatalf("load embedded rule_test dataset: %v", err)
+	}
+	if _, err := seed.Apply(ctx, pool, bundle); err != nil {
+		t.Fatalf("apply embedded rule_test dataset: %v", err)
+	}
+
+	var rawUID string
+	var latitude, longitude float64
+	if err := pool.QueryRow(ctx, `SELECT raw_uid, ST_Y(geom::geometry), ST_X(geom::geometry)
+		FROM regulation_points WHERE dataset_id=$1 AND direction_status='inferred' ORDER BY entity_id LIMIT 1`,
+		nagoyaRuleTestDatasetID).Scan(&rawUID, &latitude, &longitude); err != nil {
+		t.Fatalf("select embedded inferred point: %v", err)
+	}
+	repo := NewStopPointRepository(pool, nagoyaRuleTestDatasetID)
+	detail, found, err := repo.FindByID(ctx, rawUID)
+	if err != nil || !found {
+		t.Fatalf("find embedded rule_test point: found=%t err=%v", found, err)
+	}
+	if detail.DataPurpose != "rule_test" || detail.DatasetID != nagoyaRuleTestDatasetID ||
+		detail.DirectionStatus != "inferred" || detail.ValidityStatus != "unknown" ||
+		detail.ImputationMethod != "nearest_stop_reference" || detail.DirectionSource != "nearest_stop" ||
+		detail.ValidityReason != "source_validity_unverified" || detail.AZ == nil {
+		t.Fatalf("stored rule_test metadata is incomplete: %+v", detail)
+	}
+	var evidence map[string]any
+	if err := json.Unmarshal(detail.DirectionEvidence, &evidence); err != nil ||
+		evidence["direction_semantics"] != "stop_to_neighbor_proxy" || evidence["neighbor_entity_id"] == "" {
+		t.Fatalf("stored direction evidence is incomplete: %s err=%v", detail.DirectionEvidence, err)
+	}
+
+	rangePoints, err := repo.FindByRange(ctx, domain.GetStopPointsByRangeInput{
+		Latitude: latitude, Longitude: longitude, RadiusMeters: 1, Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("range query for embedded rule_test point: %v", err)
+	}
+	for _, point := range rangePoints {
+		if point.UniqueKey == rawUID && point.DataPurpose == "rule_test" &&
+			point.DirectionEvidence != nil && string(point.DirectionEvidence) != "{}" {
+			return
 		}
 	}
+	t.Fatalf("range result did not preserve rule_test purpose/evidence: %+v", rangePoints)
 }
 
 func TestIntegrationDatabaseFailureMapsToUnavailableSentinel(t *testing.T) {

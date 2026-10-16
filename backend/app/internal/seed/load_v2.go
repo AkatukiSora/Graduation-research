@@ -80,9 +80,18 @@ func validateV2ManifestKeys(raw []byte) error {
 		{"generator", v2GeneratorKeys}, {"provenance", v2ProvenanceKeys},
 	}
 	for _, item := range checks {
-		if err := requireExactJSONKeys(top[item.key], item.keys); err != nil {
+		var err error
+		if item.key == "provenance" {
+			err = requireOptionalJSONKeys(top[item.key], item.keys, []string{"data_purpose"})
+		} else {
+			err = requireExactJSONKeys(top[item.key], item.keys)
+		}
+		if err != nil {
 			return fmt.Errorf("%s: %w", item.key, err)
 		}
+	}
+	if err := validateOptionalV2DataPurpose(top["provenance"]); err != nil {
+		return fmt.Errorf("provenance: %w", err)
 	}
 	var files []json.RawMessage
 	if err := json.Unmarshal(top["files"], &files); err != nil {
@@ -190,6 +199,51 @@ var (
 	v2ShardFileKeys    = []string{"kind", "basename", "rows", "compressed_bytes", "compressed_sha256", "uncompressed_bytes", "uncompressed_sha256"}
 	v2EvidenceFileKeys = []string{"kind", "basename", "rows", "bytes", "sha256"}
 )
+
+func requireOptionalJSONKeys(raw json.RawMessage, required, optional []string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return fmt.Errorf("object must not be null")
+	}
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	for _, key := range required {
+		allowed[key] = struct{}{}
+		if _, ok := object[key]; !ok {
+			return fmt.Errorf("required key %q is missing", key)
+		}
+	}
+	for _, key := range optional {
+		allowed[key] = struct{}{}
+	}
+	for key := range object {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unknown field %q", key)
+		}
+	}
+	return nil
+}
+
+func validateOptionalV2DataPurpose(raw json.RawMessage) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	value, ok := object["data_purpose"]
+	if !ok {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("data_purpose must be the string %q, not null", ruleTestDataPurpose)
+	}
+	var purpose string
+	if err := json.Unmarshal(value, &purpose); err != nil || purpose != ruleTestDataPurpose {
+		return fmt.Errorf("data_purpose must be the string %q", ruleTestDataPurpose)
+	}
+	return nil
+}
 
 func requireExactJSONKeys(raw json.RawMessage, expected []string) error {
 	var object map[string]json.RawMessage

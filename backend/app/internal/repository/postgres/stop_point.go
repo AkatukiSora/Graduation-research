@@ -57,7 +57,9 @@ func (r *StopPointRepository) FindByID(ctx context.Context, id string) (domain.S
 
 	return domain.StopPointDetail{
 		StopPoint: toStopPoint(row.RawUid, row.Latitude, row.Longitude, row.DirectionDegrees.Valid, row.DirectionDegrees.Float64,
-			row.DirectionStatus, row.ValidityStatus, row.DatasetID, row.SourceMonth, row.Synthetic, row.ProductionApproved),
+			row.DirectionStatus, row.ValidityStatus, row.DatasetID, row.SourceMonth, row.Synthetic,
+			row.ImputationMethod, row.ImputationReason, row.DirectionSource, row.DirectionEvidence,
+			row.ValidityReason, row.ValidityEvidence, row.DataPurpose),
 		CreatedAt: formatTimestamp(row.CreatedAt.Time),
 		UpdatedAt: formatTimestamp(row.UpdatedAt.Time),
 	}, true, nil
@@ -85,14 +87,18 @@ func (r *StopPointRepository) FindByRange(ctx context.Context, input domain.GetS
 	stopPoints := make([]domain.StopPoint, 0, len(rows))
 	for _, row := range rows {
 		stopPoints = append(stopPoints, toStopPoint(row.RawUid, row.Latitude, row.Longitude, row.DirectionDegrees.Valid, row.DirectionDegrees.Float64,
-			row.DirectionStatus, row.ValidityStatus, row.DatasetID, row.SourceMonth, row.Synthetic, row.ProductionApproved))
+			row.DirectionStatus, row.ValidityStatus, row.DatasetID, row.SourceMonth, row.Synthetic,
+			row.ImputationMethod, row.ImputationReason, row.DirectionSource, row.DirectionEvidence,
+			row.ValidityReason, row.ValidityEvidence, row.DataPurpose))
 	}
 
 	return stopPoints, nil
 }
 
 func toStopPoint(rawUID string, latitude, longitude float64, hasDirection bool, direction float64,
-	directionStatus, validityStatus, datasetID, sourceMonth string, synthetic, productionApproved bool,
+	directionStatus, validityStatus, datasetID, sourceMonth string, synthetic bool,
+	imputationMethod, imputationReason, directionSource string, directionEvidence []byte,
+	validityReason string, validityEvidence []byte, dataPurpose string,
 ) domain.StopPoint {
 	var az *float64
 	if hasDirection {
@@ -100,16 +106,12 @@ func toStopPoint(rawUID string, latitude, longitude float64, hasDirection bool, 
 	}
 
 	return domain.StopPoint{
-		UniqueKey:          rawUID,
-		AZ:                 az,
-		Latitude:           latitude,
-		Longitude:          longitude,
-		DirectionStatus:    directionStatus,
-		ValidityStatus:     validityStatus,
-		Synthetic:          synthetic,
-		ProductionApproved: productionApproved,
-		DatasetID:          datasetID,
-		SourceMonth:        sourceMonth,
+		UniqueKey: rawUID, AZ: az, Latitude: latitude, Longitude: longitude,
+		DirectionStatus: directionStatus, ValidityStatus: validityStatus, Synthetic: synthetic,
+		DatasetID: datasetID, SourceMonth: sourceMonth, ImputationMethod: imputationMethod,
+		ImputationReason: imputationReason, DirectionSource: directionSource,
+		DirectionEvidence: append([]byte(nil), directionEvidence...), ValidityReason: validityReason,
+		ValidityEvidence: append([]byte(nil), validityEvidence...), DataPurpose: dataPurpose,
 	}
 }
 

@@ -1,0 +1,149 @@
+{
+  "content_sha256": "088e04d106d3f0089b88283d1d98a32ee6d6f962c4a14bb35af24399f7c73d0f",
+  "counts": {
+    "candidates": 7454,
+    "direction_status_counts": {
+      "confirmed": 0,
+      "inferred": 1866,
+      "unknown": 73
+    },
+    "excluded_non_stop": 383211,
+    "imputation_method_counts": {
+      "field_observation": 0,
+      "nearest_stop_reference": 1866,
+      "none": 73,
+      "osm_fusion_cautious": 0,
+      "source_entrance_geometry": 0
+    },
+    "imputation_reason_counts": {
+      "ambiguous_nearest_neighbor": 4,
+      "legacy_unrecorded": 0,
+      "missing_entrance_coordinates": 0,
+      "model_direction_inference": 0,
+      "multiple_entrance_directions": 0,
+      "no_neighbor_within_radius": 65,
+      "none": 0,
+      "source_geometry_derived": 0,
+      "source_identity_unverified": 0,
+      "topology_only_unverified": 0,
+      "topology_proxy_unverified": 1866,
+      "unsupported_entrance_geometry": 0,
+      "zero_length_geometry": 4
+    },
+    "outside_region": 166713,
+    "points": 1939,
+    "rejected": 0,
+    "rows_total": 551863,
+    "validity_reason_counts": {
+      "active_regulation_evidence": 0,
+      "legacy_unrecorded": 0,
+      "source_validity_unverified": 1939,
+      "synthetic_fixture": 0,
+      "withdrawn_regulation_evidence": 0
+    },
+    "validity_status_counts": {
+      "invalid": 0,
+      "unknown": 1939,
+      "valid": 0
+    }
+  },
+  "dataset_id": "nagoya-rule-test-202602-v1",
+  "files": [
+    {
+      "basename": "candidates-00001.jsonl.gz",
+      "compressed_bytes": 413993,
+      "compressed_sha256": "d82cf4d1103680f4288d962c6a2ece43eff19b2bbed92887870fb4accdbb91fc",
+      "kind": "candidates",
+      "rows": 4157,
+      "uncompressed_bytes": 4194230,
+      "uncompressed_sha256": "34925adec6902ce951efbc8f38bd8a79bd422c8b0f223cb631475f433c1a7e1e"
+    },
+    {
+      "basename": "candidates-00002.jsonl.gz",
+      "compressed_bytes": 311880,
+      "compressed_sha256": "a807bc99f7459d1628e5359bd19372963535ed41f9c262e693b12c3f15d7b12b",
+      "kind": "candidates",
+      "rows": 3297,
+      "uncompressed_bytes": 3333113,
+      "uncompressed_sha256": "15a4f803c396382bb655834d291249ca2b044fda64b17803b689622e97efcd19"
+    },
+    {
+      "basename": "points-00001.jsonl.gz",
+      "compressed_bytes": 64074,
+      "compressed_sha256": "90afc1ed8175e834e30a1748bdd0fa89d3cdc38beded3658dfbd3acb5fbe496a",
+      "kind": "points",
+      "rows": 1939,
+      "uncompressed_bytes": 1594126,
+      "uncompressed_sha256": "84a9c52f9fedca3f859fcfd7fcf115b67600a1191ed02b8a0c4d42791555bf62"
+    }
+  ],
+  "generator": {
+    "candidate_radius_m": 80,
+    "code_ref": "backend/generation_io/generation_io/rule_test_seed.py",
+    "code_sha256": "6ea48e81912b57d42cbdbca6c242cb5466a867ba39aa1937248d8eed79a477e3",
+    "commit": "c0974b4f2f263ca4f4e4f061b58165ac951bfbc9",
+    "dependency_versions": {
+      "numpy": "2.3.5",
+      "pandas": "2.3.3",
+      "scipy": "1.16.3"
+    },
+    "kernel": "p05-adopted-kernel",
+    "max_candidates": 6,
+    "method_implementation_sha256": "6ea48e81912b57d42cbdbca6c242cb5466a867ba39aa1937248d8eed79a477e3",
+    "method_version": "nagoya-nearest-rule-test-v1",
+    "python_version": "3.13.5",
+    "source_selection_order": [
+      "nearest_stop_reference",
+      "unknown"
+    ],
+    "thread_policy": {
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "PYTHONHASHSEED": "0"
+    },
+    "uv_lock_sha256": "ac0ffd20795ffcc34bc7d4569364afc0463662be41cf64dfd7243798205ee938",
+    "zlib_version": "1.3.1"
+  },
+  "geometry": {
+    "algorithm": "spherical-destination-v1",
+    "boundary_inclusion": "covers",
+    "boundary_sha256": "ba9cc6cebf0481618357a6d5c143025f74d836cb206381f1383659fb97c4469a",
+    "center_lat": "35.1202166",
+    "center_lon": "136.9121477",
+    "center_source": "名古屋工学院専門学校1号館公式アクセス地図のplace座標",
+    "coordinate_decimal_places": 9,
+    "radius_m": 2000,
+    "region_id": "jp:aichi:nkc-2km",
+    "sphere_radius_m": "6371008.8",
+    "vertices": 360
+  },
+  "inputs": {
+    "boundary_sha256": "ba9cc6cebf0481618357a6d5c143025f74d836cb206381f1383659fb97c4469a",
+    "enrichment_sha256": null,
+    "input_manifest_sha256": "61128f4971c9ea5052f2008188ecb2b87a011516f43a7ce12d440b5211ba6e31",
+    "source_csv_bytes": 363440778,
+    "source_csv_sha256": "0d902b472980d40fa7b472998e3424c73ad4730108fac9655ac1b23e82ee573d",
+    "source_header_sha256": "74334997340bd11605f3cb3edbc8cea93782df73af3cdc2492b9c48cb6825ca1",
+    "source_zip_sha256": "f12388fca9283f0abd9104a3b265f88caac56f43a9add92404d22a34de0e6ea5"
+  },
+  "provenance": {
+    "attribution": "公益財団法人日本道路交通情報センター（JARTIC）、2026年02月分。出典: https://www.jartic.or.jp/service/opendata/",
+    "data_purpose": "rule_test",
+    "dataset": "typeD_aichi(1).zip",
+    "edition": "2026年02月分",
+    "identity_scope": "source_month",
+    "modification_notice": "交通規制情報（公益財団法人日本道路交通情報センター、2026年02月分）を本プロジェクトが地域抽出・正規化・候補生成・欠損方向推定して作成しました。推定値は原提供者が作成・確認したものではありません。",
+    "publisher": "公益財団法人日本道路交通情報センター",
+    "rights_status": "owner-accepted-jartic-rule-test",
+    "source_identity_note": "保存原本の取得日時不明。取得時の規約不明。現在参照する規約は取得時の条件を証明しません。",
+    "source_url": "https://www.jartic.or.jp/service/opendata/",
+    "terms_reference": "https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf",
+    "terms_sha256": "b1ada2fc58d068ed95b1973932f4882dfb5d49e888f17ded934f777d545cd285"
+  },
+  "region_id": "jp:aichi:nkc-2km",
+  "schema_version": 2,
+  "source_month": "202602",
+  "synthetic": true
+}

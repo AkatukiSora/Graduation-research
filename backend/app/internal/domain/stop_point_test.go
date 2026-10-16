@@ -1,54 +1,32 @@
 package domain_test
 
 import (
-	"fmt"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/domain"
 )
 
-// TestNotificationEligibleTruthTable enumerates every combination of the four
-// inputs. A point is eligible for notification only when its dataset is
-// production approved and not synthetic and the point direction is confirmed
-// and the point is valid.
-func TestNotificationEligibleTruthTable(t *testing.T) {
-	directions := []string{domain.DirectionStatusUnknown, domain.DirectionStatusInferred, domain.DirectionStatusConfirmed}
-	validities := []string{domain.ValidityStatusUnknown, domain.ValidityStatusValid, domain.ValidityStatusInvalid}
-
-	eligibleCount := 0
-	for _, approved := range []bool{false, true} {
-		for _, synthetic := range []bool{false, true} {
-			for _, direction := range directions {
-				for _, validity := range validities {
-					name := fmt.Sprintf("approved=%t/synthetic=%t/direction=%s/validity=%s", approved, synthetic, direction, validity)
-					t.Run(name, func(t *testing.T) {
-						point := domain.StopPoint{
-							ProductionApproved: approved,
-							Synthetic:          synthetic,
-							DirectionStatus:    direction,
-							ValidityStatus:     validity,
-						}
-						want := approved && !synthetic &&
-							direction == domain.DirectionStatusConfirmed &&
-							validity == domain.ValidityStatusValid
-						if got := point.NotificationEligible(); got != want {
-							t.Fatalf("NotificationEligible() = %t, want %t", got, want)
-						}
-						if want {
-							eligibleCount++
-						}
-					})
-				}
-			}
+func TestStopPointCarriesEvidenceWithoutBackendApprovalPolicy(t *testing.T) {
+	typeOf := reflect.TypeOf(domain.StopPoint{})
+	for _, name := range []string{"ImputationMethod", "ImputationReason", "DirectionSource", "DirectionEvidence", "ValidityReason", "ValidityEvidence", "DataPurpose"} {
+		if _, ok := typeOf.FieldByName(name); !ok {
+			t.Errorf("StopPoint is missing API evidence field %q", name)
 		}
 	}
-	if eligibleCount != 1 {
-		t.Fatalf("exactly one combination must be eligible, got %d", eligibleCount)
+	for _, name := range []string{"ProductionApproved", "NotificationEligible"} {
+		if _, ok := typeOf.FieldByName(name); ok {
+			t.Errorf("StopPoint must not retain backend policy field %q", name)
+		}
 	}
-}
-
-func TestZeroValueStopPointIsNotEligible(t *testing.T) {
-	if (domain.StopPoint{}).NotificationEligible() {
-		t.Fatal("a zero value stop point must not be eligible for notification")
+	if _, ok := typeOf.MethodByName("NotificationEligible"); ok {
+		t.Fatal("notification eligibility belongs to the client, not the domain model")
+	}
+	for _, name := range []string{"DirectionEvidence", "ValidityEvidence"} {
+		field, _ := typeOf.FieldByName(name)
+		if field.Type != reflect.TypeOf(json.RawMessage{}) {
+			t.Errorf("%s has type %s, want json.RawMessage", name, field.Type)
+		}
 	}
 }

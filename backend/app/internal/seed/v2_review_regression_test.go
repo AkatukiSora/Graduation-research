@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -378,6 +379,100 @@ func TestV2ManifestRejectsNullOptionalCountDespiteCanonicalDigest(t *testing.T) 
 	})
 	if _, err := Load(broken, datasetID); err == nil || !strings.Contains(err.Error(), "integer") {
 		t.Fatalf("Load did not reject a null manifest number before semantic checks: %v", err)
+	}
+}
+
+func TestV2OptionalDataPurposeIsStrict(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		bad  bool
+	}{
+		{"omitted legacy marker", `{}`, false},
+		{"rule test marker", `{"data_purpose":"rule_test"}`, false},
+		{"null marker", `{"data_purpose":null}`, true},
+		{"empty marker", `{"data_purpose":""}`, true},
+		{"unknown marker", `{"data_purpose":"other"}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateOptionalV2DataPurpose([]byte(test.raw)); (err != nil) != test.bad {
+				t.Fatalf("validateOptionalV2DataPurpose(%s) error = %v, bad = %t", test.raw, err, test.bad)
+			}
+		})
+	}
+	if err := requireOptionalJSONKeys([]byte(`{"required":"ok","unexpected":true}`), []string{"required"}, []string{"data_purpose"}); err == nil {
+		t.Fatal("optional-key validation accepted an unknown provenance key")
+	}
+	if err := rejectDuplicateJSONKeys([]byte(`{"data_purpose":"rule_test","data_purpose":"rule_test"}`)); err == nil {
+		t.Fatal("strict JSON validation accepted a duplicate data_purpose key")
+	}
+}
+
+func TestV2RuleTestModeKeepsSyntheticAndValidityRestrictions(t *testing.T) {
+	sourceCSV := strings.Repeat("a", 64)
+	purpose := ruleTestDataPurpose
+	manifest := &v2Manifest{
+		Synthetic:  true,
+		Inputs:     v2Inputs{SourceCSVSHA256: sourceCSV},
+		Provenance: v2Provenance{DataPurpose: &purpose},
+	}
+	degree := 90.0
+	point := Point{
+		DirectionDegrees: &degree, DirectionStatus: "inferred", ImputationMethod: "nearest_stop_reference",
+		ImputationReason: "topology_proxy_unverified", DirectionSource: "nearest_stop",
+		DirectionEvidence: json.RawMessage(`{"schema_version":2,"kind":"nearest_stop_reference","source_csv_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","method_version":"nearest-stop-proxy-v1","direction_semantics":"stop_to_neighbor_proxy","neighbor_entity_id":"neighbor","candidate_rank":1}`),
+		ValidityStatus:    "unknown", ValidityReason: "source_validity_unverified", ValidityEvidence: json.RawMessage(`{}`),
+	}
+	if err := validateV2Direction(&point, manifest, nil, nil); err != nil {
+		t.Fatalf("rule_test nearest inference was rejected: %v", err)
+	}
+	if err := validateV2Validity(&point, manifest, nil, nil); err != nil {
+		t.Fatalf("rule_test unknown validity was rejected: %v", err)
+	}
+
+	legacy := *manifest
+	legacy.Provenance.DataPurpose = nil
+	if err := validateV2Direction(&point, &legacy, nil, nil); err == nil {
+		t.Fatal("legacy synthetic data accepted an inferred direction")
+	}
+	invalidValidity := point
+	invalidValidity.ValidityStatus = "valid"
+	if err := validateV2Validity(&invalidValidity, manifest, nil, nil); err == nil {
+		t.Fatal("rule_test accepted known validity")
+	}
+}
+
+func TestV2RuleTestNearestStatesVerifyRank1AgainstAllPoints(t *testing.T) {
+	const sourceID, neighborID, fartherID = "stop-a", "stop-b", "stop-c"
+	const lat0 = 35.0
+	cosLat := math.Cos(lat0 * math.Pi / 180)
+	points := map[string]v2PointIndex{
+		sourceID:   {EntityID: sourceID, Lon: 139, Lat: lat0, DirectionStatus: "inferred", ImputationMethod: "nearest_stop_reference", ImputationReason: "topology_proxy_unverified", DirectionSource: "nearest_stop", HasDirection: true, NearestNeighborID: neighborID},
+		neighborID: {EntityID: neighborID, Lon: 139.0001, Lat: lat0, DirectionStatus: "unknown", ImputationReason: "unsupported_entrance_geometry"},
+		fartherID:  {EntityID: fartherID, Lon: 139.0003, Lat: lat0, DirectionStatus: "unknown", ImputationReason: "unsupported_entrance_geometry"},
+	}
+	sourceXY := project(points[sourceID].Lon, points[sourceID].Lat, cosLat)
+	neighborXY := project(points[neighborID].Lon, points[neighborID].Lat, cosLat)
+	degree := projectionBearing(sourceXY[0], sourceXY[1], neighborXY)
+	source := points[sourceID]
+	source.DirectionDegrees = degree
+	points[sourceID] = source
+	candidate := v2CandidateIndex{
+		SourceEntityID: sourceID, NeighborEntityID: neighborID, Rank: 1,
+		DistanceM: math.Hypot(neighborXY[0]-sourceXY[0], neighborXY[1]-sourceXY[1]), CandidateBearing: degree,
+	}
+	if err := validateRuleTestNearestStates(points, map[string]v2CandidateIndex{sourceID: candidate}, strings.Repeat("a", 64), lat0); err != nil {
+		t.Fatalf("self-consistent rank-1 nearest evidence was rejected: %v", err)
+	}
+
+	fartherXY := project(points[fartherID].Lon, points[fartherID].Lat, cosLat)
+	candidate.NeighborEntityID = fartherID
+	candidate.DistanceM = math.Hypot(fartherXY[0]-sourceXY[0], fartherXY[1]-sourceXY[1])
+	candidate.CandidateBearing = projectionBearing(sourceXY[0], sourceXY[1], fartherXY)
+	source.NearestNeighborID = fartherID
+	points[sourceID] = source
+	if err := validateRuleTestNearestStates(points, map[string]v2CandidateIndex{sourceID: candidate}, strings.Repeat("a", 64), lat0); err == nil {
+		t.Fatal("rule_test accepted a rank-1 candidate that is not the nearest point")
 	}
 }
 

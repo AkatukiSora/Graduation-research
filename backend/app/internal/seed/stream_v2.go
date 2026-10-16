@@ -240,10 +240,16 @@ func scanV2(ctx context.Context, source *v2Source) (*v2Index, error) {
 		return nil, err
 	}
 	lat0 := medianLatitudeIndex(idx.points)
-	for id, point := range idx.points {
-		if point.ImputationMethod == "nearest_stop_reference" {
-			if err := validateNearestEvidence(point, idx.points, idx.firstCandidate[id], source.manifest.Inputs.SourceCSVSHA256, lat0); err != nil {
-				return nil, fmt.Errorf("point %q: %w", id, err)
+	if source.manifest.isRuleTest() {
+		if err := validateRuleTestNearestStates(idx.points, idx.firstCandidate, source.manifest.Inputs.SourceCSVSHA256, lat0); err != nil {
+			return nil, err
+		}
+	} else {
+		for id, point := range idx.points {
+			if point.ImputationMethod == "nearest_stop_reference" {
+				if err := validateNearestEvidence(point, idx.points, idx.firstCandidate[id], source.manifest.Inputs.SourceCSVSHA256, lat0); err != nil {
+					return nil, fmt.Errorf("point %q: %w", id, err)
+				}
 			}
 		}
 	}
@@ -487,13 +493,35 @@ func validateV2Direction(p *Point, m *v2Manifest, evidenceRecords map[string]v2E
 	default:
 		return invalid(CodeDirection, "unknown direction status %q", p.DirectionStatus)
 	}
-	if m.Synthetic && p.DirectionStatus != "unknown" {
+	if m.isRuleTest() {
+		if p.DirectionStatus == "confirmed" || p.DirectionStatus == "inferred" && p.ImputationMethod != "nearest_stop_reference" {
+			return invalid(CodeDirection, "rule_test permits only unknown or inferred nearest_stop_reference directions")
+		}
+		if p.DirectionStatus == "unknown" && !ruleTestUnknownDirectionReasons[p.ImputationReason] {
+			return invalid(CodeDirection, "rule_test unknown reason %q is not allowed", p.ImputationReason)
+		}
+	}
+	if m.Synthetic && !m.isRuleTest() && p.DirectionStatus != "unknown" {
 		return invalid(CodeDirection, "synthetic-v2 datasets must remain unknown")
 	}
 	return nil
 }
 
+var ruleTestUnknownDirectionReasons = map[string]bool{
+	"unsupported_entrance_geometry": true,
+	"multiple_entrance_directions":  true,
+	"no_neighbor_within_radius":     true,
+	"zero_length_geometry":          true,
+	"ambiguous_nearest_neighbor":    true,
+}
+
 func validateV2Validity(p *Point, m *v2Manifest, evidenceRecords map[string]v2EvidenceRecord, evidenceUses map[string]struct{}) error {
+	if m.isRuleTest() {
+		if p.ValidityStatus != "unknown" || p.ValidityReason != "source_validity_unverified" || !isEmptyJSONObject(p.ValidityEvidence) {
+			return invalid(CodeValidity, "rule_test validity must remain unknown/source_validity_unverified with empty evidence")
+		}
+		return nil
+	}
 	switch p.ValidityStatus {
 	case "unknown":
 		if !v2ValidityReasons[p.ValidityReason] || !isEmptyJSONObject(p.ValidityEvidence) {
@@ -899,6 +927,95 @@ func medianLatitude(points map[string]Point) float64 {
 		return (latitudes[middle-1] + latitudes[middle]) / 2
 	}
 	return latitudes[middle]
+}
+
+type projectedNeighbor struct {
+	EntityID  string
+	DistanceM float64
+}
+
+func validateRuleTestNearestStates(points map[string]v2PointIndex, firstCandidates map[string]v2CandidateIndex, sourceCSV string, lat0 float64) error {
+	cosLat := math.Cos(lat0 * math.Pi / 180)
+	for id, point := range points {
+		pointXY := project(point.Lon, point.Lat, cosLat)
+		neighbors := make([]projectedNeighbor, 0, len(points)-1)
+		for otherID, other := range points {
+			if otherID == id {
+				continue
+			}
+			otherXY := project(other.Lon, other.Lat, cosLat)
+			neighbors = append(neighbors, projectedNeighbor{
+				EntityID: otherID, DistanceM: math.Hypot(otherXY[0]-pointXY[0], otherXY[1]-pointXY[1]),
+			})
+		}
+		sort.Slice(neighbors, func(i, j int) bool {
+			if neighbors[i].DistanceM != neighbors[j].DistanceM {
+				return neighbors[i].DistanceM < neighbors[j].DistanceM
+			}
+			return neighbors[i].EntityID < neighbors[j].EntityID
+		})
+		nearest := math.Inf(1)
+		second := math.Inf(1)
+		if len(neighbors) > 0 {
+			nearest = neighbors[0].DistanceM
+		}
+		if len(neighbors) > 1 {
+			second = neighbors[1].DistanceM
+		}
+		candidate, hasCandidate := firstCandidates[id]
+
+		if point.DirectionStatus == "inferred" {
+			if nearest <= 1e-6 || second-nearest <= 1e-6 || nearest > 80 || !hasCandidate || candidate.NeighborEntityID != neighbors[0].EntityID {
+				return invalid(CodeDirection, "point %q inferred nearest proxy does not match a unique rank-1 neighbor within 80 m", id)
+			}
+			if err := validateNearestEvidence(point, points, candidate, sourceCSV, lat0); err != nil {
+				return fmt.Errorf("point %q: %w", id, err)
+			}
+			continue
+		}
+
+		switch point.ImputationReason {
+		case "unsupported_entrance_geometry", "multiple_entrance_directions":
+			// Entrances are intentionally absent from the public bundle. Their
+			// precedence is checked by the fresh-input generation review.
+		case "no_neighbor_within_radius":
+			if nearest <= 80 || hasCandidate {
+				return invalid(CodeDirection, "point %q claims no_neighbor_within_radius but an all-points neighbor exists within 80 m", id)
+			}
+		case "zero_length_geometry":
+			if nearest > 1e-6 || !matchesNearestCandidate(point, points, pointXY, neighbors, candidate, hasCandidate, cosLat, nearest) {
+				return invalid(CodeDirection, "point %q zero_length_geometry reason does not match its rank-1 projection", id)
+			}
+		case "ambiguous_nearest_neighbor":
+			if second-nearest > 1e-6 || !matchesNearestCandidate(point, points, pointXY, neighbors, candidate, hasCandidate, cosLat, nearest) {
+				return invalid(CodeDirection, "point %q ambiguous_nearest_neighbor reason does not match its rank-1 projection", id)
+			}
+		default:
+			return invalid(CodeDirection, "point %q has unsupported rule_test unknown reason %q", id, point.ImputationReason)
+		}
+	}
+	return nil
+}
+
+func matchesNearestCandidate(point v2PointIndex, points map[string]v2PointIndex, pointXY [2]float64, neighbors []projectedNeighbor, candidate v2CandidateIndex, hasCandidate bool, cosLat, nearest float64) bool {
+	// Python and Go projections can order epsilon-tied neighbors differently;
+	// the candidate is checked against the full epsilon-tied set below.
+	if !hasCandidate || candidate.SourceEntityID != point.EntityID || candidate.Rank != 1 || math.Abs(candidate.DistanceM-nearest) > 1e-6 {
+		return false
+	}
+	neighborFound := false
+	for _, neighbor := range neighbors {
+		if neighbor.EntityID == candidate.NeighborEntityID && neighbor.DistanceM-nearest <= 1e-6 {
+			neighborFound = true
+			break
+		}
+	}
+	neighborPoint, exists := points[candidate.NeighborEntityID]
+	if !neighborFound || !exists {
+		return false
+	}
+	otherXY := project(neighborPoint.Lon, neighborPoint.Lat, cosLat)
+	return circularDifference(projectionBearing(pointXY[0], pointXY[1], otherXY), candidate.CandidateBearing) <= 1e-6
 }
 
 func validateNearestEvidence(point v2PointIndex, points map[string]v2PointIndex, candidate v2CandidateIndex, sourceCSV string, lat0 float64) error {

@@ -19,12 +19,22 @@ SELECT
     p.direction_degrees,
     p.direction_status,
     p.validity_status,
-    p.created_at,
-    p.updated_at,
+    p.imputation_method,
+    p.imputation_reason,
+    p.direction_source,
+    p.direction_evidence,
+    p.validity_reason,
+    p.validity_evidence,
     d.dataset_id,
     d.source_month,
     d.synthetic,
-    d.production_approved
+    CASE
+        WHEN d.provenance->>'data_purpose' = 'rule_test' THEN 'rule_test'
+        WHEN d.synthetic THEN 'synthetic_fixture'
+        ELSE 'observational'
+    END AS data_purpose,
+    p.created_at,
+    p.updated_at
 FROM regulation_points AS p
 JOIN regulation_datasets AS d ON d.dataset_id = p.dataset_id
 WHERE p.dataset_id = $1::text
@@ -37,18 +47,24 @@ type FindRegulationPointByRawUIDParams struct {
 }
 
 type FindRegulationPointByRawUIDRow struct {
-	RawUid             string
-	Latitude           float64
-	Longitude          float64
-	DirectionDegrees   pgtype.Float8
-	DirectionStatus    string
-	ValidityStatus     string
-	CreatedAt          pgtype.Timestamptz
-	UpdatedAt          pgtype.Timestamptz
-	DatasetID          string
-	SourceMonth        string
-	Synthetic          bool
-	ProductionApproved bool
+	RawUid            string
+	Latitude          float64
+	Longitude         float64
+	DirectionDegrees  pgtype.Float8
+	DirectionStatus   string
+	ValidityStatus    string
+	ImputationMethod  string
+	ImputationReason  string
+	DirectionSource   string
+	DirectionEvidence []byte
+	ValidityReason    string
+	ValidityEvidence  []byte
+	DatasetID         string
+	SourceMonth       string
+	Synthetic         bool
+	DataPurpose       string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
 }
 
 // Looks one point up by its source identifier inside a single dataset version.
@@ -62,12 +78,18 @@ func (q *Queries) FindRegulationPointByRawUID(ctx context.Context, arg FindRegul
 		&i.DirectionDegrees,
 		&i.DirectionStatus,
 		&i.ValidityStatus,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.ImputationMethod,
+		&i.ImputationReason,
+		&i.DirectionSource,
+		&i.DirectionEvidence,
+		&i.ValidityReason,
+		&i.ValidityEvidence,
 		&i.DatasetID,
 		&i.SourceMonth,
 		&i.Synthetic,
-		&i.ProductionApproved,
+		&i.DataPurpose,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -80,10 +102,20 @@ SELECT
     p.direction_degrees,
     p.direction_status,
     p.validity_status,
+    p.imputation_method,
+    p.imputation_reason,
+    p.direction_source,
+    p.direction_evidence,
+    p.validity_reason,
+    p.validity_evidence,
     d.dataset_id,
     d.source_month,
     d.synthetic,
-    d.production_approved
+    CASE
+        WHEN d.provenance->>'data_purpose' = 'rule_test' THEN 'rule_test'
+        WHEN d.synthetic THEN 'synthetic_fixture'
+        ELSE 'observational'
+    END AS data_purpose
 FROM regulation_points AS p
 JOIN regulation_datasets AS d ON d.dataset_id = p.dataset_id
 WHERE p.dataset_id = $1::text
@@ -107,16 +139,22 @@ type ListRegulationPointsInRangeParams struct {
 }
 
 type ListRegulationPointsInRangeRow struct {
-	RawUid             string
-	Latitude           float64
-	Longitude          float64
-	DirectionDegrees   pgtype.Float8
-	DirectionStatus    string
-	ValidityStatus     string
-	DatasetID          string
-	SourceMonth        string
-	Synthetic          bool
-	ProductionApproved bool
+	RawUid            string
+	Latitude          float64
+	Longitude         float64
+	DirectionDegrees  pgtype.Float8
+	DirectionStatus   string
+	ValidityStatus    string
+	ImputationMethod  string
+	ImputationReason  string
+	DirectionSource   string
+	DirectionEvidence []byte
+	ValidityReason    string
+	ValidityEvidence  []byte
+	DatasetID         string
+	SourceMonth       string
+	Synthetic         bool
+	DataPurpose       string
 }
 
 // Geographic search inside one dataset version. The radius is in metres on the
@@ -143,10 +181,16 @@ func (q *Queries) ListRegulationPointsInRange(ctx context.Context, arg ListRegul
 			&i.DirectionDegrees,
 			&i.DirectionStatus,
 			&i.ValidityStatus,
+			&i.ImputationMethod,
+			&i.ImputationReason,
+			&i.DirectionSource,
+			&i.DirectionEvidence,
+			&i.ValidityReason,
+			&i.ValidityEvidence,
 			&i.DatasetID,
 			&i.SourceMonth,
 			&i.Synthetic,
-			&i.ProductionApproved,
+			&i.DataPurpose,
 		); err != nil {
 			return nil, err
 		}
