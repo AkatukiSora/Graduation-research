@@ -7,11 +7,6 @@ app_db_user         = "gr9app"
 ecr_repository_name = "gr9-backend-app"
 app_image_uri       = "012751249662.dkr.ecr.ap-northeast-3.amazonaws.com/gr9-backend-app:latest"
 
-# Dev-only temporary dataset: migration task seeds this ID and Lambda reads it.
-# Replace with a new, reviewed immutable ID when production data is ready.
-seed_dataset_ids      = "nagoya-rule-test-202602-v1"
-stop_point_dataset_id = "nagoya-rule-test-202602-v1"
-
 # Aurora Serverless v2 の MinCapacity=0 は engine version / region の組み合わせに依存します。
 # 利用中リージョンで 0 が未対応なら 0.5 以上に変更してください。
 serverless_min_acu       = 0

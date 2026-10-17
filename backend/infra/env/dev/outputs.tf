@@ -63,11 +63,6 @@ output "http_api_endpoint" {
   value       = module.http_api.api_endpoint
 }
 
-output "stop_point_dataset_id" {
-  description = "Dataset selected by the dev API."
-  value       = var.stop_point_dataset_id
-}
-
 output "ecs_cluster_name" {
   description = "ECS cluster name used for migration tasks."
   value       = module.ecs_migration.cluster_name

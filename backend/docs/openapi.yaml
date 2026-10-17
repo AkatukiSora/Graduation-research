@@ -15,13 +15,8 @@ info:
     出典は公益財団法人日本道路交通情報センター (https://www.jartic.or.jp/service/opendata/)、
     利用条件の参照先は https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf。
     原取得日時と取得時点の規約は不明で、参照中の規約は当時の適用条件の証拠ではない。
-    dataPurpose=rule_test / datasetId=nagoya-rule-test-202602-v1 の機械可読bundle一式は
-    https://github.com/NKC-CV2026/Graduation-research/archive/dc73f7ca7179fe958f90e5453c3b92b4adfe9346.zip
-    から匿名・無料で取得できる（リポジトリ全体のZIP内の
-    backend/app/internal/seeddata/data/nagoya-rule-test-202602-v1/）。
-    同ディレクトリの manifest.json は全shardのSHA-256を記録し、README.mdに出典・加工表示・
-    取得時条件の不明点を記載する。これはOSMを使用しない近傍地点proxy版であり、
-    将来のOSM由来データセットの配布条件や採用・公開を示すものではない。
+    この API のデータを公開する場合は、応答版に一致する完全な immutable bundle と notice の取得先を併記する。
+    この変更は bundle の生成・公開や download 提供を行わない。
 servers:
   - url: https://api.example.com
 tags:

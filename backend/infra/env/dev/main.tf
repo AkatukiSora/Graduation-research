@@ -98,7 +98,7 @@ module "ecs_migration" {
     DB_SSL_MODE         = "require"
     ATLAS_BINARY_PATH   = "/usr/local/bin/atlas"
     ATLAS_MIGRATION_DIR = "file:///app/db/migrations"
-    SEED_DATASET_IDS    = var.seed_dataset_ids
+    SEED_DATASET_IDS    = var.stop_point_dataset_id
   }
   tags = var.tags
 }

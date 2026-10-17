@@ -162,7 +162,7 @@ API（`cmd/api`）は設定 `STOP_POINT_DATASET_ID` で指定した 1 つのデ�
 
 API range/detail は `az`（従来どおり nullable string）、方向・有効性の status/reason/evidence、`imputationMethod`、`directionSource`、`dataPurpose`、dataset ID と年月を返します。`productionApproved` と `notificationEligible` は返さず、通知可否や角度しきい値も判定しません。クライアントは根拠と不確実性を表示・考慮し、通知可否を独自に判断する必要があります。候補一覧は API に出力されません。
 
-出典・加工表示: 交通規制情報（公益財団法人日本道路交通情報センター、2026年02月分）を本プロジェクトが地域抽出・正規化し、欠損方向に近傍点 proxy を付与します。推定値は原提供者が作成・確認したものではありません。JARTIC の案内は [オープンデータ](https://www.jartic.or.jp/service/opendata/)、参照した利用条件は [利用規約](https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf) です。原取得日時および当時の適用規約は不明で、owner の受容判断は法的保証を意味しません。`nagoya-rule-test-202602-v1` の manifest、全 shard、README（notice）、REPORT は [コミット固定の公開ZIP](https://github.com/NKC-CV2026/Graduation-research/archive/dc73f7ca7179fe958f90e5453c3b92b4adfe9346.zip) の `backend/app/internal/seeddata/data/nagoya-rule-test-202602-v1/` から匿名で取得できます。実環境への投入・配備は別途行います。
+出典・加工表示: 交通規制情報（公益財団法人日本道路交通情報センター、2026年02月分）を本プロジェクトが地域抽出・正規化し、欠損方向に近傍点 proxy を付与します。推定値は原提供者が作成・確認したものではありません。JARTIC の案内は [オープンデータ](https://www.jartic.or.jp/service/opendata/)、参照した利用条件は [利用規約](https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf) です。原取得日時および当時の適用規約は不明で、owner の受容判断は法的保証を意味しません。この作業ではデータ bundle の生成・公開、完全な機械可読 download の提供、実環境への投入・配備は行いません。
 
 - DB に接続できないときは `/api/v1/health` が 503（`{"status":"degraded","database":"unavailable"}`）、地点取得も 503（`error.code=database_unavailable`）を返します。
 - IAM 認証では新しい接続ごとに認証 token を再生成します。`DB_PASSWORD` が設定されている場合は固定 password を使い、AWS には問い合わせません。

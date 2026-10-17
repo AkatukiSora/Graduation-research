@@ -88,25 +88,14 @@ variable "app_db_user" {
   default = "gr9app"
 }
 
-variable "seed_dataset_ids" {
-  description = "Comma-separated embedded dataset IDs seeded by the dev migration task after schema migration."
-  type        = string
-  default     = "nagoya-rule-test-202602-v1"
-
-  validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9._-]{0,63}(,[a-z0-9][a-z0-9._-]{0,63})*$", var.seed_dataset_ids))
-    error_message = "seed_dataset_ids must be a nonempty comma-separated list of valid dataset IDs."
-  }
-}
-
 variable "stop_point_dataset_id" {
   description = "Single embedded dataset ID selected by the dev API (rule-test is not production-safe)."
   type        = string
   default     = "nagoya-rule-test-202602-v1"
 
   validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9._-]{0,63}$", var.stop_point_dataset_id)) && contains(split(",", var.seed_dataset_ids), var.stop_point_dataset_id)
-    error_message = "stop_point_dataset_id must be a valid ID included in seed_dataset_ids."
+    condition     = can(regex("^[a-z0-9][a-z0-9._-]{0,63}$", var.stop_point_dataset_id))
+    error_message = "stop_point_dataset_id must be a valid dataset ID."
   }
 }
 
