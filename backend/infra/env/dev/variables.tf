@@ -88,6 +88,17 @@ variable "app_db_user" {
   default = "gr9app"
 }
 
+variable "stop_point_dataset_id" {
+  description = "Single embedded dataset ID selected by the dev API (rule-test is not production-safe)."
+  type        = string
+  default     = "nagoya-rule-test-202602-v1"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._-]{0,63}$", var.stop_point_dataset_id))
+    error_message = "stop_point_dataset_id must be a valid dataset ID."
+  }
+}
+
 variable "lambda_function_name" {
   description = "Lambda function name for the backend API."
   type        = string

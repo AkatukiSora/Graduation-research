@@ -54,12 +54,13 @@ module "lambda_service" {
   db_cluster_resource_id = module.aurora_postgres.cluster_resource_id
   db_user                = var.app_db_user
   environment_variables = {
-    DB_HOST     = module.aurora_postgres.cluster_endpoint
-    DB_PORT     = tostring(module.aurora_postgres.port)
-    DB_NAME     = module.aurora_postgres.database_name
-    DB_USER     = var.app_db_user
-    DB_IAM_AUTH = "true"
-    DB_SSL_MODE = "require"
+    DB_HOST               = module.aurora_postgres.cluster_endpoint
+    DB_PORT               = tostring(module.aurora_postgres.port)
+    DB_NAME               = module.aurora_postgres.database_name
+    DB_USER               = var.app_db_user
+    DB_IAM_AUTH           = "true"
+    DB_SSL_MODE           = "require"
+    STOP_POINT_DATASET_ID = var.stop_point_dataset_id
   }
   tags = var.tags
 }
@@ -97,6 +98,7 @@ module "ecs_migration" {
     DB_SSL_MODE         = "require"
     ATLAS_BINARY_PATH   = "/usr/local/bin/atlas"
     ATLAS_MIGRATION_DIR = "file:///app/db/migrations"
+    SEED_DATASET_IDS    = var.stop_point_dataset_id
   }
   tags = var.tags
 }
