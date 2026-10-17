@@ -75,7 +75,7 @@ Repository Variables に次を設定します。
 - private subnet には NAT を置かないため、ECR / Logs / S3 などは VPC endpoint 経由で利用します
 - migration task は初回 bootstrap deadlock を避けるため、master user の password を使って接続します
 - dev の既定データ `nagoya-rule-test-202602-v1` は一時的な検証用です。方向は近傍地点への未検証 proxy (`inferred`/`unknown`) であり、道路の進行方向・接近方向・現行性・通知安全性を示しません。実運転の警告判定には使わないでください
-- この HTTP API は認証なしで公開されます。地点は架空ではなく、JARTIC の2026年02月分に由来します。出典・加工表示と取得時規約の不明点は `backend/app/internal/seeddata/data/nagoya-rule-test-202602-v1/README.md` に記載しています。公開範囲を変える際には配布条件とクライアント側の表示を再確認してください
+- この HTTP API は認証なしで公開されます。地点は架空ではなく、JARTIC の2026年02月分に由来します。出典・加工表示と取得時規約の不明点は `backend/app/internal/seeddata/data/nagoya-rule-test-202602-v1/README.md` に記載しています。対応するbundle一式（manifest、全shard、README、REPORT）は [公開コミット固定のZIP](https://github.com/NKC-CV2026/Graduation-research/archive/dc73f7ca7179fe958f90e5453c3b92b4adfe9346.zip) の同ディレクトリから取得できます。公開範囲を変える際には配布条件とクライアント側の表示を再確認してください
 - `backend-dev.yml` は先に migration task を起動し、正常終了後に Lambda を更新します。`SEED_DATASET_IDS` は migration task にだけ、`STOP_POINT_DATASET_ID` は Lambda にだけ渡します。投入済みかどうかは `/api/v1/health` では確認できず、地点の範囲検索と詳細取得で確認します
 - 本番用データに切り替えるときは新しい immutable ID を作成し、先に `seed_dataset_ids` に追加して投入・検証し、その後 `stop_point_dataset_id` を切り替えます。dev の公開後 smoke check (`backend-dev.yml` の `Verify Seeded Dev API`) は現在の名古屋一時データの座標・ID・用途を期待するため、切替 PR では同じ変更に検査対象も更新してください。旧データの削除は別途承認が必要です（`backend/app/db/seed/README.md`）
 - app runtime は `gr9app` + IAM DB authentication を使う前提です
