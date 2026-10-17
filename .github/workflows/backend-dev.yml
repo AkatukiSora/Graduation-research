@@ -130,6 +130,10 @@ jobs:
         if: needs.changes.outputs.infra_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'
         run: terraform validate -no-color
 
+      - name: Terraform Test
+        if: needs.changes.outputs.infra_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'
+        run: terraform test -no-color
+
   infra-plan:
     name: Plan Dev Infra
     if: github.event_name == 'pull_request' && (needs.changes.outputs.infra_changed == 'true' || needs.changes.outputs.workflow_changed == 'true')
@@ -403,6 +407,45 @@ jobs:
         run: |
           echo "lambda_function_name=$(terraform output -raw lambda_function_name)" >> "$GITHUB_OUTPUT"
           echo "api_endpoint=$(terraform output -raw http_api_endpoint)" >> "$GITHUB_OUTPUT"
+          echo "dataset_id=$(terraform output -raw stop_point_dataset_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Seeded Dev API
+        env:
+          API_ENDPOINT: ${{ steps.app-tf.outputs.api_endpoint }}
+          DATASET_ID: ${{ steps.app-tf.outputs.dataset_id }}
+        run: |
+          set -euo pipefail
+          # This check is intentionally specific to the temporary Nagoya dev dataset.
+          test "$DATASET_ID" = "nagoya-rule-test-202602-v1"
+          response="$RUNNER_TEMP/stop-points-response.json"
+          detail="$RUNNER_TEMP/stop-point-detail.json"
+          trap 'rm -f "$response" "$detail"' EXIT
+          url="${API_ENDPOINT%/}/api/v1/stop-points"
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error --max-time 20 --get \
+                --data-urlencode 'lat=35.1202166' \
+                --data-urlencode 'long=136.9121477' \
+                --data-urlencode 'radius=300' \
+                --data-urlencode 'limit=100' \
+                "$url" -o "$response" && \
+                jq -e --arg id "$DATASET_ID" \
+                  'type == "array" and length > 0 and all(.[]; .datasetId == $id and .dataPurpose == "rule_test")' \
+                  "$response" >/dev/null; then
+              unique_key=$(jq -r '.[0].uniqueKey' "$response")
+              encoded_key=$(jq -rn --arg key "$unique_key" '$key | @uri')
+              if curl --fail --silent --show-error --max-time 20 \
+                  "$url/$encoded_key" -o "$detail" && \
+                  jq -e --arg id "$DATASET_ID" --arg key "$unique_key" \
+                    '.datasetId == $id and .uniqueKey == $key and .dataPurpose == "rule_test"' \
+                    "$detail" >/dev/null; then
+                echo "Dev API returned seeded rule-test points and detail for $DATASET_ID"
+                exit 0
+              fi
+            fi
+            if [ "$attempt" -lt 6 ]; then sleep 10; fi
+          done
+          echo "Dev API did not return the seeded rule-test dataset" >&2
+          exit 1
 
   report:
     name: Report Backend Dev
