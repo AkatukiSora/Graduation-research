@@ -12,6 +12,7 @@ import (
 
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/config"
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/db"
+	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/seeddata"
 )
 
 const (
@@ -59,6 +60,14 @@ func runWithRetry(ctx context.Context) error {
 }
 
 func runOnce(ctx context.Context) error {
+	seedIDs, err := parseSeedDatasetIDs(os.Getenv(seedDatasetsEnv))
+	if err != nil {
+		return err
+	}
+	bundles, err := loadSeedBundles(seeddata.FS(), seedIDs)
+	if err != nil {
+		return err
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -98,7 +107,7 @@ func runOnce(ctx context.Context) error {
 		return fmt.Errorf("run atlas migrate apply: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 
-	return nil
+	return applySeedBundles(ctx, pool, bundles, os.Stdout)
 }
 
 func fail(err error) {

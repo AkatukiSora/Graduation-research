@@ -1,0 +1,129 @@
+{
+  "schema_version": 2,
+  "manifest_required_fields": [
+    "schema_version",
+    "task_id",
+    "base_commit",
+    "status",
+    "input_kind",
+    "counts",
+    "rows_total",
+    "candidate_rows",
+    "production_approved",
+    "source_active_status",
+    "identity_scope",
+    "parameters",
+    "boundary",
+    "provenance",
+    "schemas",
+    "schema",
+    "parent_refs",
+    "code_refs",
+    "runtime",
+    "outputs",
+    "excluded_claims"
+  ],
+  "manifest_optional_fields": [
+    "resume"
+  ],
+  "resume_required_fields": [
+    "stage",
+    "source_generation_manifest",
+    "source_generation_manifest_ref",
+    "source_generation_manifest_sha256",
+    "normalized_points_sha256",
+    "raw_scan_resumed",
+    "region_clip_recomputed",
+    "fresh_output_path"
+  ],
+  "resume_contract": {
+    "stage": "whole_region_kernel_only",
+    "raw_scan_resumed": false,
+    "region_clip_recomputed": false
+  },
+  "status": "complete_candidate_artifact_not_quality_approved",
+  "input_kind": "selected_projection_fixture_not_full_raw_csv",
+  "parameters": {
+    "max_candidates": 6,
+    "candidate_radius_m": 80.0,
+    "chunked_kernel_invocations": false
+  },
+  "count_fields": [
+    "source_rows",
+    "excluded_non_stop",
+    "rejected_stop",
+    "outside_region",
+    "normalized_points",
+    "candidate_rows"
+  ],
+  "count_aliases": {
+    "rows_total": "counts.source_rows",
+    "candidate_rows": "counts.candidate_rows"
+  },
+  "schemas": {
+    "normalized_points": [
+      "entity_id", "region_id", "source_row", "selected_field_sha256", "source_month",
+      "prefecture", "raw_uid", "record_id", "jartic_record_id", "ユニークキー",
+      "police", "regulation", "branch", "raw_update", "update_semantics",
+      "source_active_status", "source_location_token", "source_entrance_tokens",
+      "entrance_points", "lon", "lat", "normalization_status", "included_boundary",
+      "production_approved"
+    ],
+    "candidate_features": [
+      "point_index", "neighbor_index", "record_id", "uniqueKey", "lon", "lat",
+      "candidate_rank", "candidate_distance_m", "candidate_bearing", "p_d1", "p_d2",
+      "p_d3", "p_gap12", "p_ratio12", "q_d1", "q_d2", "reciprocal_rank",
+      "mutual_nearest", "min_axis_angle_other", "min_directed_angle_other",
+      "third_midpoint_distance_m", "bearing_mod_45", "bearing_mod_90",
+      "p_n12", "q_n12", "p_n15", "q_n15", "p_n18", "q_n18", "p_n20", "q_n20",
+      "p_n25", "q_n25", "p_n30", "q_n30", "p_n40", "q_n40", "p_n60", "q_n60",
+      "p_n100", "q_n100", "entity_id", "candidate_entity_id", "source_row",
+      "candidate_source_row", "source_month", "parent_normalized_sha256",
+      "bearing_semantics", "production_approved"
+    ],
+    "rejected_records": [
+      "raw_uid", "source_row", "reason", "selected_field_sha256"
+    ]
+  },
+  "parent_ref_roles": [
+    "selected_source",
+    "source_contract",
+    "operator_input_freeze",
+    "g01_artifact_contract",
+    "synthetic_boundary",
+    "nagoya_boundary",
+    "boundary_manifest",
+    "ward_crosscheck",
+    "boundary_validation",
+    "jartic_terms",
+    "p05_features",
+    "p02_lock"
+  ],
+  "code_ref_roles": [
+    "generation_io_init",
+    "generation_io_main",
+    "generation_io_artifacts",
+    "generation_io_region",
+    "generation_io_source",
+    "generation_io_supervisor",
+    "schema_v2",
+    "pyproject",
+    "uv_lock",
+    "p05_features"
+  ],
+  "runtime": {
+    "python_version": "3.13.5",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3",
+    "scipy": "1.16.3"
+  },
+  "guards": {
+    "production_approved": false,
+    "source_active_status": "unknown",
+    "identity_scope": "(prefecture, source_month, raw_uid); month-local; no cross-month upsert/delete",
+    "bearing_semantics": "candidate_point_neighbor_only",
+    "region_id": "fixture:region-a",
+    "synthetic_boundary": true,
+    "nagoya_boundary_claim": false
+  }
+}

@@ -49,3 +49,9 @@ DB schema の初期化と更新は Terraform ではなく app 側で管理しま
 - migration task は初回 bootstrap deadlock を避けるため、master user の password を使って接続します
 - その master password は Aurora が Secrets Manager に保持するものだけを利用します
 - migration 内で `gr9app` を作成し、`rds_iam` を付与する前提です
+
+## Evidence schema expand（S1）
+
+`202610140001_regulation_point_evidence.sql` は `regulation_points` に `imputation_method`、`imputation_reason`、`direction_source`、`direction_evidence`、`validity_reason`、`validity_evidence` を追加します。既存 unknown は `none / legacy_unrecorded / unknown / {}` とし、synthetic dataset の unknown validity だけ `synthetic_fixture / {}` にします。既存 known の方向・status・validity は変更せず、未記録の根拠を `legacy_unrecorded` として一時互換CHECKで保持します。
+
+S1では既存の `production_approved` 列とCHECKを維持し、旧seed/APIが動作するexpand段階を保ちます。consumer移行後の列削除と最終状態CHECKは別のcontract migration（S2）の責務です。S1 migrationを実DBへ適用したり、旧writer停止・backup・deployを判断したりする手順ではありません。

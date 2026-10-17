@@ -41,7 +41,6 @@ COPY --chown=10001:10001 --chmod=0555 --from=atlas /atlas-bin/atlas /usr/local/b
 COPY --chown=10001:10001 --chmod=0555 --from=builder /out/api /api
 COPY --chown=10001:10001 --chmod=0555 --from=builder /out/migrate /migrate
 COPY --chown=10001:10001 db /app/db
-COPY --chown=10001:10001 mockResponse.json /app/mockResponse.json
 
 USER 10001:10001
 

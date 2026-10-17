@@ -1,0 +1,140 @@
+{
+  "content_sha256": "f148bf876ee81a44049b689e1002a40dd03367d66eb9a40cb2985460cc2d77f8",
+  "counts": {
+    "candidates": 58,
+    "direction_status_counts": {
+      "confirmed": 0,
+      "inferred": 0,
+      "unknown": 12
+    },
+    "excluded_non_stop": 0,
+    "imputation_method_counts": {
+      "field_observation": 0,
+      "nearest_stop_reference": 0,
+      "none": 12,
+      "osm_fusion_cautious": 0,
+      "source_entrance_geometry": 0
+    },
+    "imputation_reason_counts": {
+      "ambiguous_nearest_neighbor": 0,
+      "legacy_unrecorded": 0,
+      "missing_entrance_coordinates": 12,
+      "model_direction_inference": 0,
+      "multiple_entrance_directions": 0,
+      "no_neighbor_within_radius": 0,
+      "none": 0,
+      "source_geometry_derived": 0,
+      "source_identity_unverified": 0,
+      "topology_only_unverified": 0,
+      "topology_proxy_unverified": 0,
+      "unsupported_entrance_geometry": 0,
+      "zero_length_geometry": 0
+    },
+    "outside_region": 0,
+    "points": 12,
+    "rejected": 0,
+    "rows_total": 12,
+    "validity_reason_counts": {
+      "active_regulation_evidence": 0,
+      "legacy_unrecorded": 0,
+      "source_validity_unverified": 0,
+      "synthetic_fixture": 12,
+      "withdrawn_regulation_evidence": 0
+    },
+    "validity_status_counts": {
+      "invalid": 0,
+      "unknown": 12,
+      "valid": 0
+    }
+  },
+  "dataset_id": "synthetic-v2",
+  "files": [
+    {
+      "basename": "candidates-00001.jsonl.gz",
+      "compressed_bytes": 4393,
+      "compressed_sha256": "af9e255ffda8cf046c75a4640d6d833e091bb14d81e6fd88d63e3f009becde4d",
+      "kind": "candidates",
+      "rows": 58,
+      "uncompressed_bytes": 53410,
+      "uncompressed_sha256": "d77045737f9babb0640e177a2a5bdce7d25ae54c43313c760b80eb87d34e757c"
+    },
+    {
+      "basename": "points-00001.jsonl.gz",
+      "compressed_bytes": 420,
+      "compressed_sha256": "16286e49b7758d635bd4a2c75e38bdeeffcc33f9af7373314cd313fbdcf6b72b",
+      "kind": "points",
+      "rows": 12,
+      "uncompressed_bytes": 5603,
+      "uncompressed_sha256": "628b1ee3765a62fb0cd37262ed580b6c8850744297c8549279f0fed220d0606a"
+    }
+  ],
+  "generator": {
+    "candidate_radius_m": 80,
+    "code_ref": "db/seed/synthetic/build_dataset_v2.py",
+    "code_sha256": "18eb75f93ca41ed2a76d39448d7bfe8126e425e12c1753c1c4a1b777f616cd94",
+    "commit": "uncommitted deterministic fixture generator",
+    "dependency_versions": {
+      "implementation": "CPython",
+      "json": "python-stdlib",
+      "zlib": "1.3.1"
+    },
+    "kernel": "synthetic-v1 fixture conversion; no real-data inference",
+    "max_candidates": 6,
+    "method_implementation_sha256": "18eb75f93ca41ed2a76d39448d7bfe8126e425e12c1753c1c4a1b777f616cd94",
+    "method_version": "synthetic-v1-preserving-v2-v1",
+    "python_version": "3.13.5",
+    "source_selection_order": [
+      "source_entrance_geometry",
+      "nearest_stop_reference",
+      "unknown"
+    ],
+    "thread_policy": {
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "PYTHONHASHSEED": "0"
+    },
+    "uv_lock_sha256": "ac0ffd20795ffcc34bc7d4569364afc0463662be41cf64dfd7243798205ee938",
+    "zlib_version": "1.3.1"
+  },
+  "geometry": {
+    "algorithm": "synthetic-rectangle-fixture-v1",
+    "boundary_inclusion": "covers",
+    "boundary_sha256": "7330f575420f269d278bfb0ee577f5907ee1986b44aeafdc73483edf5f328eb4",
+    "center_lat": "1.0000000",
+    "center_lon": "1.0000000",
+    "center_source": "synthetic fixture only",
+    "coordinate_decimal_places": 0,
+    "radius_m": 0,
+    "region_id": "synthetic:rectangle",
+    "sphere_radius_m": "6371008.8",
+    "vertices": 4
+  },
+  "inputs": {
+    "boundary_sha256": "7330f575420f269d278bfb0ee577f5907ee1986b44aeafdc73483edf5f328eb4",
+    "enrichment_sha256": null,
+    "input_manifest_sha256": "cd13eae6b6724eef0bd446b124ea55020526fe4201742276b2893489e4fa82fb",
+    "source_csv_bytes": 5658,
+    "source_csv_sha256": "e47713d187b312bbd3f55f30e8e10d4c82cd957fd91ca0f165f9559939c4fa21",
+    "source_header_sha256": "74334997340bd11605f3cb3edbc8cea93782df73af3cdc2492b9c48cb6825ca1",
+    "source_zip_sha256": null
+  },
+  "provenance": {
+    "attribution": "Synthetic-only fixture; no third-party data.",
+    "dataset": "synthetic regulation fixture",
+    "edition": "synthetic-v2",
+    "identity_scope": "source_month",
+    "modification_notice": "Deterministic conversion of the checked-in synthetic-v1 fixture.",
+    "publisher": "graduation-research-synthetic",
+    "rights_status": "synthetic-no-third-party-data",
+    "source_identity_note": "Test fixture only; not evidence of real source acquisition, inference, or permission.",
+    "source_url": "",
+    "terms_reference": "not-applicable-synthetic-only",
+    "terms_sha256": ""
+  },
+  "region_id": "synthetic:rectangle",
+  "schema_version": 2,
+  "source_month": "202701",
+  "synthetic": true
+}

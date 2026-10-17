@@ -1,0 +1,1 @@
+{"type":"Feature","properties":{"region_id":"fixture:region-a","synthetic":true,"description":"Closed synthetic test rectangle; not a Nagoya administrative boundary."},"geometry":{"type":"Polygon","coordinates":[[[136.9329,35.0457],[136.9333,35.0457],[136.9333,35.0462],[136.9329,35.0462],[136.9329,35.0457]]]}}

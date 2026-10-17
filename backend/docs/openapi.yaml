@@ -5,6 +5,18 @@ info:
   description: >
     自転車利用者向けに、一時停止警告対象地点 (StopPoint) を返す取得専用 API。
     現時点では StopPoint の ID検索と範囲検索のみを扱う。
+    地点は PostgreSQL (PostGIS) に投入された規制データセットのうち、
+    設定 STOP_POINT_DATASET_ID で指定した 1 つの版だけから返す。
+    方位 (az) が不明な地点は az を null で返し、directionStatus / validityStatus /
+    synthetic と、方向・有効性の根拠および dataPurpose を返す。通知可否はこの API では判定しない。
+    dataPurpose=rule_test は、JARTIC 愛知県警 2026年02月分に由来する地点へ
+    最近傍地点 proxy の仮方位を付けたテストデータを示す。方向は stop_to_neighbor_proxy であり、
+    実道路の進行・接近方向、規制の現行性、通知安全性を保証しない。有効性は unknown のままとする。
+    出典は公益財団法人日本道路交通情報センター (https://www.jartic.or.jp/service/opendata/)、
+    利用条件の参照先は https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf。
+    原取得日時と取得時点の規約は不明で、参照中の規約は当時の適用条件の証拠ではない。
+    この API のデータを公開する場合は、応答版に一致する完全な immutable bundle と notice の取得先を併記する。
+    この変更は bundle の生成・公開や download 提供を行わない。
 servers:
   - url: https://api.example.com
 tags:
@@ -18,9 +30,10 @@ paths:
       tags: [health]
       operationId: getHealth
       summary: Health check
+      description: データベースへの疎通を確認して結果を返す。
       responses:
         "200":
-          description: Service is healthy
+          description: Service and database are available
           content:
             application/json:
               schema:
@@ -29,14 +42,28 @@ paths:
                 ok:
                   value:
                     status: ok
-                    version: v1
+                    database: ok
+        "503":
+          description: Database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                degraded:
+                  value:
+                    status: degraded
+                    database: unavailable
 
   /api/v1/stop-points:
     get:
       tags: [stop-points]
       operationId: getStopPointsByRange
       summary: Get stop points by range
-      description: 中心座標と検索半径を指定して StopPoint を取得する。
+      description: >
+        中心座標と検索半径を指定して StopPoint を取得する。
+        中心に近い順に返し、距離が等しい地点は内部の識別子順に並べる。
+        そのため同じ条件では結果の順序と limit での切り取りが一定になる。
       parameters:
         - $ref: "#/components/parameters/Lat"
         - $ref: "#/components/parameters/Long"
@@ -50,30 +77,68 @@ paths:
               schema:
                 $ref: "#/components/schemas/StopPointRangeResponse"
               examples:
-                sample:
+                syntheticUnknownDirection:
+                  summary: 合成データ。方位と有効性は未確認。
                   value:
-                    - uniqueKey: "1"
-                      az: "197"
-                      lat: "35.0700971"
-                      long: "136.8764412"
+                    - uniqueKey: "SYNTHETIC00000000000000000000001"
+                      az: null
+                      lat: "1"
+                      long: "1"
+                      directionStatus: unknown
+                      validityStatus: unknown
+                      synthetic: true
+                      datasetId: synthetic-v1
+                      sourceMonth: "202701"
+                      imputationMethod: none
+                      imputationReason: missing_entrance_coordinates
+                      directionSource: unknown
+                      directionEvidence: {}
+                      validityReason: synthetic_fixture
+                      validityEvidence: {}
+                      dataPurpose: synthetic_fixture
         "400":
           description: Invalid query
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid:
+                  value:
+                    error:
+                      code: invalid_request
+                      message: lat is required
         "500":
           description: Internal error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                internal:
+                  value:
+                    error:
+                      code: internal_error
+                      message: Internal Server Error
+        "503":
+          description: Database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    error:
+                      code: database_unavailable
+                      message: database is temporarily unavailable
 
   /api/v1/stop-points/{id}:
     get:
       tags: [stop-points]
       operationId: getStopPointById
       summary: Get stop point by ID
+      description: raw_uid (uniqueKey) で 1 件取得する。created_at / updated_at は保存されている値。
       parameters:
         - $ref: "#/components/parameters/StopPointId"
       responses:
@@ -84,26 +149,62 @@ paths:
               schema:
                 $ref: "#/components/schemas/StopPointDetailResponse"
               examples:
-                sample:
+                syntheticUnknownDirection:
                   value:
-                    uniqueKey: "1"
-                    az: "197"
-                    lat: "35.0700971"
-                    long: "136.8764412"
-                    created_at: "2026-01-01T00:00:00Z"
-                    updated_at: "2026-01-02T00:00:00Z"
+                    uniqueKey: "SYNTHETIC00000000000000000000001"
+                    az: null
+                    lat: "1"
+                    long: "1"
+                    directionStatus: unknown
+                    validityStatus: unknown
+                    synthetic: true
+                    datasetId: synthetic-v1
+                    sourceMonth: "202701"
+                    imputationMethod: none
+                    imputationReason: missing_entrance_coordinates
+                    directionSource: unknown
+                    directionEvidence: {}
+                    validityReason: synthetic_fixture
+                    validityEvidence: {}
+                    dataPurpose: synthetic_fixture
+                    created_at: "2026-10-13T01:02:03.456789Z"
+                    updated_at: "2026-10-13T01:02:03.456789Z"
         "404":
           description: Stop point not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notFound:
+                  value:
+                    error:
+                      code: not_found
+                      message: stop point not found
         "500":
           description: Internal error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                internal:
+                  value:
+                    error:
+                      code: internal_error
+                      message: Internal Server Error
+        "503":
+          description: Database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    error:
+                      code: database_unavailable
+                      message: database is temporarily unavailable
 
 components:
   parameters:
@@ -151,7 +252,7 @@ components:
       name: id
       in: path
       required: true
-      description: StopPoint の識別子。
+      description: StopPoint の識別子 (uniqueKey)。
       schema:
         type: string
 
@@ -160,15 +261,16 @@ components:
       type: object
       required:
         - status
-        - version
+        - database
       properties:
         status:
           type: string
-          enum: [ok]
+          enum: [ok, degraded]
           example: ok
-        version:
+        database:
           type: string
-          example: v1
+          enum: [ok, unavailable]
+          example: ok
 
     StopPointRangeResponseItem:
       type: object
@@ -177,19 +279,88 @@ components:
         - az
         - lat
         - long
+        - directionStatus
+        - validityStatus
+        - synthetic
+        - datasetId
+        - sourceMonth
+        - imputationMethod
+        - imputationReason
+        - directionSource
+        - directionEvidence
+        - validityReason
+        - validityEvidence
+        - dataPurpose
       properties:
         uniqueKey:
           type: string
-          example: "1"
+          example: "SYNTHETIC00000000000000000000001"
         az:
           type: string
-          example: "197"
+          nullable: true
+          description: >
+            方位 (度、10進数の文字列)。方位が不明な地点では null。
+            隣接地点への候補方位はここに入らない。
+          example: null
         lat:
           type: string
-          example: "35.0700971"
+          example: "1"
         long:
           type: string
-          example: "136.8764412"
+          example: "1"
+        directionStatus:
+          type: string
+          enum: [unknown, inferred, confirmed]
+          description: az の確からしさ。unknown のとき az は null。
+          example: unknown
+        validityStatus:
+          type: string
+          enum: [unknown, valid, invalid]
+          description: 地点自体の有効性の確認状態。
+          example: unknown
+        synthetic:
+          type: boolean
+          description: 合成された仮データの地点かどうか。
+          example: true
+        datasetId:
+          type: string
+          description: 地点を含むデータセットの版。
+          example: synthetic-v1
+        sourceMonth:
+          type: string
+          description: データセットの元データの年月 (YYYYMM)。
+          example: "202701"
+        imputationMethod:
+          type: string
+          description: 方位値の生成・採用方法。none は未推定を表す。
+          example: none
+        imputationReason:
+          type: string
+          description: 方位が未確定または推定された理由。
+          example: missing_entrance_coordinates
+        directionSource:
+          type: string
+          description: 方位情報の出典種別。
+          example: unknown
+        directionEvidence:
+          type: object
+          description: サニタイズ済みの方向根拠。内容は directionStatus と imputationMethod に従う。
+          additionalProperties: true
+          example: {}
+        validityReason:
+          type: string
+          description: 有効性の確認理由。
+          example: synthetic_fixture
+        validityEvidence:
+          type: object
+          description: サニタイズ済みの有効性根拠。
+          additionalProperties: true
+          example: {}
+        dataPurpose:
+          type: string
+          enum: [observational, synthetic_fixture, rule_test]
+          description: データの用途。rule_test の近傍方位は stop_to_neighbor_proxy で、進行方向や通知安全性を示さない。
+          example: synthetic_fixture
 
     StopPointRangeResponse:
       type: array
@@ -207,11 +378,11 @@ components:
             created_at:
               type: string
               format: date-time
-              example: "2026-01-01T00:00:00Z"
+              example: "2026-10-13T01:02:03.456789Z"
             updated_at:
               type: string
               format: date-time
-              example: "2026-01-02T00:00:00Z"
+              example: "2026-10-13T01:02:03.456789Z"
 
     ErrorResponse:
       type: object
@@ -230,8 +401,9 @@ components:
         code:
           type: string
           enum:
-            - INVALID_QUERY
-            - STOP_POINT_NOT_FOUND
-            - INTERNAL_ERROR
+            - invalid_request
+            - not_found
+            - database_unavailable
+            - internal_error
         message:
           type: string
