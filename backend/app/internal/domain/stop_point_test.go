@@ -1,32 +1,26 @@
 package domain_test
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/domain"
 )
 
-func TestStopPointCarriesEvidenceWithoutBackendApprovalPolicy(t *testing.T) {
-	typeOf := reflect.TypeOf(domain.StopPoint{})
-	for _, name := range []string{"ImputationMethod", "ImputationReason", "DirectionSource", "DirectionEvidence", "ValidityReason", "ValidityEvidence", "DataPurpose"} {
-		if _, ok := typeOf.FieldByName(name); !ok {
-			t.Errorf("StopPoint is missing API evidence field %q", name)
+// The public models carry only what a client needs. Evidence, provenance and
+// dataset metadata live in the database and must not leak into the domain
+// model, from where they could reach a response by accident.
+func TestStopPointModelsCarryOnlyPublicFields(t *testing.T) {
+	want := []string{"UniqueKey", "AZ", "Latitude", "Longitude", "DirectionStatus"}
+	for _, model := range []any{domain.StopPoint{}, domain.StopPointDetail{}} {
+		typeOf := reflect.TypeOf(model)
+		if typeOf.NumField() != len(want) {
+			t.Errorf("%s has %d fields, want %d", typeOf.Name(), typeOf.NumField(), len(want))
 		}
-	}
-	for _, name := range []string{"ProductionApproved", "NotificationEligible"} {
-		if _, ok := typeOf.FieldByName(name); ok {
-			t.Errorf("StopPoint must not retain backend policy field %q", name)
-		}
-	}
-	if _, ok := typeOf.MethodByName("NotificationEligible"); ok {
-		t.Fatal("notification eligibility belongs to the client, not the domain model")
-	}
-	for _, name := range []string{"DirectionEvidence", "ValidityEvidence"} {
-		field, _ := typeOf.FieldByName(name)
-		if field.Type != reflect.TypeOf(json.RawMessage{}) {
-			t.Errorf("%s has type %s, want json.RawMessage", name, field.Type)
+		for _, name := range want {
+			if _, ok := typeOf.FieldByName(name); !ok {
+				t.Errorf("%s is missing field %q", typeOf.Name(), name)
+			}
 		}
 	}
 }

@@ -7,16 +7,11 @@ info:
     現時点では StopPoint の ID検索と範囲検索のみを扱う。
     地点は PostgreSQL (PostGIS) に投入された規制データセットのうち、
     設定 STOP_POINT_DATASET_ID で指定した 1 つの版だけから返す。
-    方位 (az) が不明な地点は az を null で返し、directionStatus / validityStatus /
-    synthetic と、方向・有効性の根拠および dataPurpose を返す。通知可否はこの API では判定しない。
-    dataPurpose=rule_test は、JARTIC 愛知県警 2026年02月分に由来する地点へ
-    最近傍地点 proxy の仮方位を付けたテストデータを示す。方向は stop_to_neighbor_proxy であり、
-    実道路の進行・接近方向、規制の現行性、通知安全性を保証しない。有効性は unknown のままとする。
-    出典は公益財団法人日本道路交通情報センター (https://www.jartic.or.jp/service/opendata/)、
-    利用条件の参照先は https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf。
-    原取得日時と取得時点の規約は不明で、参照中の規約は当時の適用条件の証拠ではない。
-    この API のデータを公開する場合は、応答版に一致する完全な immutable bundle と notice の取得先を併記する。
-    この変更は bundle の生成・公開や download 提供を行わない。
+    応答には、通知判定に必要な最小限の値 (識別子・座標・方位・方位の確からしさ) だけを含める。
+    方位 (az) が不明な地点は az を null、directionStatus を unknown で返す。
+    データの出所・生成方法・根拠・データセット版などの内部情報は応答に含めず、データベース側にだけ保持する。
+    通知可否はこの API では判定しない。directionStatus=inferred の方位は推定値であり、
+    実道路の進行・接近方向や規制の現行性を保証しない。
 servers:
   - url: https://api.example.com
 tags:
@@ -77,25 +72,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/StopPointRangeResponse"
               examples:
-                syntheticUnknownDirection:
-                  summary: 合成データ。方位と有効性は未確認。
+                unknownDirection:
+                  summary: 方位が未確認の地点。
                   value:
                     - uniqueKey: "SYNTHETIC00000000000000000000001"
                       az: null
                       lat: "1"
                       long: "1"
                       directionStatus: unknown
-                      validityStatus: unknown
-                      synthetic: true
-                      datasetId: synthetic-v1
-                      sourceMonth: "202701"
-                      imputationMethod: none
-                      imputationReason: missing_entrance_coordinates
-                      directionSource: unknown
-                      directionEvidence: {}
-                      validityReason: synthetic_fixture
-                      validityEvidence: {}
-                      dataPurpose: synthetic_fixture
+                    - uniqueKey: "SYNTHETIC00000000000000000000002"
+                      az: "197.5"
+                      lat: "1.0001"
+                      long: "1.0002"
+                      directionStatus: inferred
         "400":
           description: Invalid query
           content:
@@ -138,7 +127,7 @@ paths:
       tags: [stop-points]
       operationId: getStopPointById
       summary: Get stop point by ID
-      description: raw_uid (uniqueKey) で 1 件取得する。created_at / updated_at は保存されている値。
+      description: raw_uid (uniqueKey) で 1 件取得する。
       parameters:
         - $ref: "#/components/parameters/StopPointId"
       responses:
@@ -149,26 +138,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/StopPointDetailResponse"
               examples:
-                syntheticUnknownDirection:
+                unknownDirection:
+                  summary: 方位が未確認の地点。
                   value:
                     uniqueKey: "SYNTHETIC00000000000000000000001"
                     az: null
                     lat: "1"
                     long: "1"
                     directionStatus: unknown
-                    validityStatus: unknown
-                    synthetic: true
-                    datasetId: synthetic-v1
-                    sourceMonth: "202701"
-                    imputationMethod: none
-                    imputationReason: missing_entrance_coordinates
-                    directionSource: unknown
-                    directionEvidence: {}
-                    validityReason: synthetic_fixture
-                    validityEvidence: {}
-                    dataPurpose: synthetic_fixture
-                    created_at: "2026-10-13T01:02:03.456789Z"
-                    updated_at: "2026-10-13T01:02:03.456789Z"
         "404":
           description: Stop point not found
           content:
@@ -274,23 +251,13 @@ components:
 
     StopPointRangeResponseItem:
       type: object
+      description: 範囲検索の 1 件。詳細応答 (StopPointDetailResponse) とは別の型で、現在は同じ項目を持つ。
       required:
         - uniqueKey
         - az
         - lat
         - long
         - directionStatus
-        - validityStatus
-        - synthetic
-        - datasetId
-        - sourceMonth
-        - imputationMethod
-        - imputationReason
-        - directionSource
-        - directionEvidence
-        - validityReason
-        - validityEvidence
-        - dataPurpose
       properties:
         uniqueKey:
           type: string
@@ -309,58 +276,7 @@ components:
           type: string
           example: "1"
         directionStatus:
-          type: string
-          enum: [unknown, inferred, confirmed]
-          description: az の確からしさ。unknown のとき az は null。
-          example: unknown
-        validityStatus:
-          type: string
-          enum: [unknown, valid, invalid]
-          description: 地点自体の有効性の確認状態。
-          example: unknown
-        synthetic:
-          type: boolean
-          description: 合成された仮データの地点かどうか。
-          example: true
-        datasetId:
-          type: string
-          description: 地点を含むデータセットの版。
-          example: synthetic-v1
-        sourceMonth:
-          type: string
-          description: データセットの元データの年月 (YYYYMM)。
-          example: "202701"
-        imputationMethod:
-          type: string
-          description: 方位値の生成・採用方法。none は未推定を表す。
-          example: none
-        imputationReason:
-          type: string
-          description: 方位が未確定または推定された理由。
-          example: missing_entrance_coordinates
-        directionSource:
-          type: string
-          description: 方位情報の出典種別。
-          example: unknown
-        directionEvidence:
-          type: object
-          description: サニタイズ済みの方向根拠。内容は directionStatus と imputationMethod に従う。
-          additionalProperties: true
-          example: {}
-        validityReason:
-          type: string
-          description: 有効性の確認理由。
-          example: synthetic_fixture
-        validityEvidence:
-          type: object
-          description: サニタイズ済みの有効性根拠。
-          additionalProperties: true
-          example: {}
-        dataPurpose:
-          type: string
-          enum: [observational, synthetic_fixture, rule_test]
-          description: データの用途。rule_test の近傍方位は stop_to_neighbor_proxy で、進行方向や通知安全性を示さない。
-          example: synthetic_fixture
+          $ref: "#/components/schemas/DirectionStatus"
 
     StopPointRangeResponse:
       type: array
@@ -368,21 +284,41 @@ components:
         $ref: "#/components/schemas/StopPointRangeResponseItem"
 
     StopPointDetailResponse:
-      allOf:
-        - $ref: "#/components/schemas/StopPointRangeResponseItem"
-        - type: object
-          required:
-            - created_at
-            - updated_at
-          properties:
-            created_at:
-              type: string
-              format: date-time
-              example: "2026-10-13T01:02:03.456789Z"
-            updated_at:
-              type: string
-              format: date-time
-              example: "2026-10-13T01:02:03.456789Z"
+      type: object
+      description: 1 件取得の応答。範囲検索の項目 (StopPointRangeResponseItem) とは別の型で、現在は同じ項目を持つ。
+      required:
+        - uniqueKey
+        - az
+        - lat
+        - long
+        - directionStatus
+      properties:
+        uniqueKey:
+          type: string
+          example: "SYNTHETIC00000000000000000000001"
+        az:
+          type: string
+          nullable: true
+          description: >
+            方位 (度、10進数の文字列)。方位が不明な地点では null。
+            隣接地点への候補方位はここに入らない。
+          example: null
+        lat:
+          type: string
+          example: "1"
+        long:
+          type: string
+          example: "1"
+        directionStatus:
+          $ref: "#/components/schemas/DirectionStatus"
+
+    DirectionStatus:
+      type: string
+      enum: [unknown, inferred, confirmed]
+      description: >
+        az の確からしさ。unknown のとき az は null。
+        inferred は推定値、confirmed は現地確認済みの値を表す。
+      example: unknown
 
     ErrorResponse:
       type: object

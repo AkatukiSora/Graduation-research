@@ -26,6 +26,8 @@
   - 停止点の緯度
 - `long: string`
   - 停止点の経度
+- `directionStatus: string`
+  - `az` の確からしさ（`unknown` / `inferred` / `confirmed`）
 
 ## StopPointHandlers.GetByID
 
@@ -46,10 +48,8 @@
   - 停止点の緯度
 - `long: string`
   - 停止点の経度
-- `created_at: string`
-  - 作成日時
-- `updated_at: string`
-  - 更新日時
+- `directionStatus: string`
+  - `az` の確からしさ（`unknown` / `inferred` / `confirmed`）
 
 ## StopPointService.GetByRange
 
@@ -77,6 +77,8 @@
   - 停止点の緯度
 - `longitude: float64`
   - 停止点の経度
+- `directionStatus: string`
+  - `az` の確からしさ（`unknown` / `inferred` / `confirmed`）
 
 ## StopPointService.GetByID
 
@@ -87,8 +89,8 @@
 
 ### 出力
 
-- `StopPoint`
-  - ID指定で取得した単一の停止点
+- `StopPointDetail`
+  - ID指定で取得した単一の停止点（`StopPoint` と同じ項目を持つ別の型）
 - `uniqueKey: string`
   - 停止点の一意識別子
 - `az: string`
@@ -97,10 +99,8 @@
   - 停止点の緯度
 - `longitude: float64`
   - 停止点の経度
-- `createdAt: time.Time`
-  - 作成日時
-- `updatedAt: time.Time`
-  - 更新日時
+- `directionStatus: string`
+  - `az` の確からしさ（`unknown` / `inferred` / `confirmed`）
 
 ## StopPointRepository.FindByRange
 
@@ -127,6 +127,8 @@
   - 停止点の緯度
 - `longitude: float64`
   - 停止点の経度
+- `directionStatus: string`
+  - `az` の確からしさ（`unknown` / `inferred` / `confirmed`）
 
 ## StopPointRepository.FindByID
 
@@ -137,8 +139,8 @@
 
 ### 出力
 
-- `StopPoint`
-  - ID指定で取得した単一の停止点
+- `StopPointDetail`
+  - ID指定で取得した単一の停止点（`StopPoint` と同じ項目を持つ別の型）
 - `uniqueKey: string`
   - 停止点の一意識別子
 - `az: string`
@@ -147,10 +149,8 @@
   - 停止点の緯度
 - `longitude: float64`
   - 停止点の経度
-- `createdAt: time.Time`
-  - 作成日時
-- `updatedAt: time.Time`
-  - 更新日時
+- `directionStatus: string`
+  - `az` の確からしさ（`unknown` / `inferred` / `confirmed`）
 
 ## StopPointModel
 

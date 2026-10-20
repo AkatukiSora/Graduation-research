@@ -76,10 +76,10 @@
 `StopPointModel` には、現時点では最小限の型だけを置く。
 
 - `StopPoint`
-  - `id`
-  - API で必要な属性
-  - `created_at`
-  - `updated_at`
+  - `uniqueKey`、座標、`az`、`directionStatus`
+  - 根拠・出所・データセット版は含めない
+- `StopPointDetail`
+  - `StopPoint` と同じ項目を持つ別の型
 - `GetByRangeInput`
   - `center_latitude`
   - `center_longitude`

@@ -56,21 +56,28 @@ func float(v float64) *float64 { return &v }
 
 func syntheticUnknown(key string) domain.StopPoint {
 	return domain.StopPoint{
-		UniqueKey:         key,
-		Latitude:          1.00007,
-		Longitude:         1.00031,
-		DirectionStatus:   domain.DirectionStatusUnknown,
-		ValidityStatus:    domain.ValidityStatusUnknown,
-		Synthetic:         true,
-		DatasetID:         "synthetic-v1",
-		SourceMonth:       "202701",
-		ImputationMethod:  "none",
-		ImputationReason:  "missing_entrance_coordinates",
-		DirectionSource:   "unknown",
-		DirectionEvidence: json.RawMessage(`{}`),
-		ValidityReason:    "synthetic_fixture",
-		ValidityEvidence:  json.RawMessage(`{}`),
-		DataPurpose:       "synthetic_fixture",
+		UniqueKey:       key,
+		Latitude:        1.00007,
+		Longitude:       1.00031,
+		DirectionStatus: domain.DirectionStatusUnknown,
+	}
+}
+
+func detailOf(point domain.StopPoint) domain.StopPointDetail {
+	return domain.StopPointDetail(point)
+}
+
+// assertKeys fails unless the object has exactly the wanted keys, so a field
+// added to a response must be added to the public contract on purpose.
+func assertKeys(t *testing.T, got map[string]any, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("object has %d keys %v, want %v", len(got), got, want)
+	}
+	for _, key := range want {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("missing key %q: %v", key, got)
+		}
 	}
 }
 
@@ -108,7 +115,7 @@ func assertError(t *testing.T, rec *httptest.ResponseRecorder, status int, code 
 	return errBody
 }
 
-func TestRangeReturnsUncertaintyFieldsAndNullAzimuth(t *testing.T) {
+func TestRangeReturnsOnlyPublicFieldsAndNullAzimuth(t *testing.T) {
 	repo := &fakeStopPoints{list: []domain.StopPoint{syntheticUnknown("SYN1")}}
 	rec := get(t, newRouter(repo, fakeHealth{}), "/api/v1/stop-points?lat=1&long=1&radius=100&limit=7")
 
@@ -121,33 +128,20 @@ func TestRangeReturnsUncertaintyFieldsAndNullAzimuth(t *testing.T) {
 	}
 	item := items[0]
 	want := map[string]any{
-		"uniqueKey":         "SYN1",
-		"az":                nil,
-		"lat":               "1.00007",
-		"long":              "1.00031",
-		"directionStatus":   "unknown",
-		"validityStatus":    "unknown",
-		"synthetic":         true,
-		"datasetId":         "synthetic-v1",
-		"sourceMonth":       "202701",
-		"imputationMethod":  "none",
-		"imputationReason":  "missing_entrance_coordinates",
-		"directionSource":   "unknown",
-		"directionEvidence": map[string]any{},
-		"validityReason":    "synthetic_fixture",
-		"validityEvidence":  map[string]any{},
-		"dataPurpose":       "synthetic_fixture",
+		"uniqueKey":       "SYN1",
+		"az":              nil,
+		"lat":             "1.00007",
+		"long":            "1.00031",
+		"directionStatus": "unknown",
 	}
-	if len(item) != len(want) {
-		t.Fatalf("item has %d keys, want %d: %v", len(item), len(want), item)
+	keys := make([]string, 0, len(want))
+	for key := range want {
+		keys = append(keys, key)
 	}
+	assertKeys(t, item, keys...)
 	for key, value := range want {
-		got, present := item[key]
-		if !present {
-			t.Fatalf("missing key %q: %v", key, item)
-		}
-		if !reflect.DeepEqual(got, value) {
-			t.Fatalf("%s = %#v, want %#v", key, got, value)
+		if !reflect.DeepEqual(item[key], value) {
+			t.Fatalf("%s = %#v, want %#v", key, item[key], value)
 		}
 	}
 	if repo.lastRange.Limit != 7 || repo.lastRange.RadiusMeters != 100 {
@@ -181,82 +175,42 @@ func TestKnownAzimuthIsDecimalString(t *testing.T) {
 	}
 }
 
-func TestDetailIncludesDatabaseTimestamps(t *testing.T) {
-	detail := domain.StopPointDetail{
-		StopPoint: syntheticUnknown("SYN1"),
-		CreatedAt: "2026-10-13T01:02:03.456789Z",
-		UpdatedAt: "2026-10-13T04:05:06Z",
-	}
-	repo := &fakeStopPoints{byID: map[string]domain.StopPointDetail{"SYN1": detail}}
+func TestDetailReturnsOnlyPublicFields(t *testing.T) {
+	point := syntheticUnknown("SYN1")
+	point.AZ = float(197.5)
+	point.DirectionStatus = domain.DirectionStatusInferred
+	repo := &fakeStopPoints{byID: map[string]domain.StopPointDetail{"SYN1": detailOf(point)}}
 	rec := get(t, newRouter(repo, fakeHealth{}), "/api/v1/stop-points/SYN1")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
 	body := decodeObject(t, rec)
-	if body["created_at"] != detail.CreatedAt || body["updated_at"] != detail.UpdatedAt {
-		t.Fatalf("timestamps not passed through: %v", body)
-	}
-	if body["az"] != nil || body["directionStatus"] != "unknown" || body["dataPurpose"] != "synthetic_fixture" {
-		t.Fatalf("unexpected uncertainty/provenance fields: %v", body)
-	}
-	if _, exists := body["productionApproved"]; exists {
-		t.Fatal("API must not expose productionApproved")
-	}
-	if _, exists := body["notificationEligible"]; exists {
-		t.Fatal("API must not decide notification eligibility")
-	}
-	if len(body) != 18 {
-		t.Fatalf("detail has %d keys, want 18: %v", len(body), body)
+	assertKeys(t, body, "uniqueKey", "az", "lat", "long", "directionStatus")
+	if body["uniqueKey"] != "SYN1" || body["az"] != "197.5" || body["lat"] != "1.00007" ||
+		body["long"] != "1.00031" || body["directionStatus"] != "inferred" {
+		t.Fatalf("unexpected detail body: %v", body)
 	}
 }
 
-func TestRangeAndDetailExposeRuleTestEvidenceWithoutBackendGates(t *testing.T) {
+func TestInternalFieldsAreNeverExposed(t *testing.T) {
 	point := syntheticUnknown("RULE-TEST")
 	point.AZ = float(197.5)
 	point.DirectionStatus = domain.DirectionStatusInferred
-	point.ImputationMethod = "nearest_stop_reference"
-	point.ImputationReason = "topology_proxy_unverified"
-	point.DirectionSource = "nearest_stop"
-	point.DirectionEvidence = json.RawMessage(`{"schema_version":2,"kind":"nearest_stop_reference","source_csv_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","method_version":"nearest-stop-proxy-v1","direction_semantics":"stop_to_neighbor_proxy","neighbor_entity_id":"neighbor-1","candidate_rank":1}`)
-	point.ValidityReason = "source_validity_unverified"
-	point.DataPurpose = "rule_test"
-	point.DatasetID = "nagoya-rule-test-202602-v1"
-
-	detail := domain.StopPointDetail{StopPoint: point, CreatedAt: "2026-10-13T01:02:03Z", UpdatedAt: "2026-10-13T01:02:03Z"}
-	repo := &fakeStopPoints{list: []domain.StopPoint{point}, byID: map[string]domain.StopPointDetail{point.UniqueKey: detail}}
+	repo := &fakeStopPoints{list: []domain.StopPoint{point}, byID: map[string]domain.StopPointDetail{point.UniqueKey: detailOf(point)}}
 	router := newRouter(repo, fakeHealth{})
-	for _, rec := range []*httptest.ResponseRecorder{
-		get(t, router, "/api/v1/stop-points?lat=1&long=1&radius=100"),
-		get(t, router, "/api/v1/stop-points/RULE-TEST"),
-	} {
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
-		}
-		var got map[string]any
-		if strings.HasPrefix(rec.Body.String(), "[") {
-			var items []map[string]any
-			if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil || len(items) != 1 {
-				t.Fatalf("unexpected range body: %v: %s", err, rec.Body.String())
+	hidden := []string{
+		"validityStatus", "dataPurpose", "synthetic", "datasetId", "sourceMonth",
+		"directionEvidence", "validityEvidence", "imputationMethod", "imputationReason",
+		"directionSource", "validityReason", "created_at", "updated_at",
+		"productionApproved", "notificationEligible",
+	}
+	for _, target := range []string{"/api/v1/stop-points?lat=1&long=1&radius=100", "/api/v1/stop-points/RULE-TEST"} {
+		body := get(t, router, target).Body.String()
+		for _, key := range hidden {
+			if strings.Contains(body, `"`+key+`"`) {
+				t.Fatalf("%s exposes internal field %q: %s", target, key, body)
 			}
-			got = items[0]
-		} else {
-			got = decodeObject(t, rec)
-		}
-		if got["az"] != "197.5" || got["imputationMethod"] != "nearest_stop_reference" ||
-			got["imputationReason"] != "topology_proxy_unverified" || got["directionSource"] != "nearest_stop" ||
-			got["validityReason"] != "source_validity_unverified" || got["dataPurpose"] != "rule_test" {
-			t.Fatalf("rule-test metadata missing from API response: %v", got)
-		}
-		evidence, ok := got["directionEvidence"].(map[string]any)
-		if !ok || evidence["direction_semantics"] != "stop_to_neighbor_proxy" || evidence["candidate_rank"] != float64(1) {
-			t.Fatalf("directionEvidence must remain a JSON object: %#v", got["directionEvidence"])
-		}
-		if _, exists := got["productionApproved"]; exists {
-			t.Fatal("API must not expose productionApproved")
-		}
-		if _, exists := got["notificationEligible"]; exists {
-			t.Fatal("API must not decide notification eligibility")
 		}
 	}
 }

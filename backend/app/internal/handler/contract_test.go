@@ -22,8 +22,7 @@ func TestContractSamples(t *testing.T) {
 	known := syntheticUnknown("SYN-KNOWN")
 	known.AZ = float(197.5)
 	known.DirectionStatus = domain.DirectionStatusConfirmed
-	known.ValidityStatus = domain.ValidityStatusValid
-	detail := domain.StopPointDetail{StopPoint: syntheticUnknown("SYN-1"), CreatedAt: "2026-10-13T01:02:03.456789Z", UpdatedAt: "2026-10-13T01:02:03.456789Z"}
+	detail := detailOf(syntheticUnknown("SYN-1"))
 
 	repo := &fakeStopPoints{
 		list: []domain.StopPoint{syntheticUnknown("SYN-1"), known},
