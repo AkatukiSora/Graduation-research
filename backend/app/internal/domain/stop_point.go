@@ -1,9 +1,6 @@
 package domain
 
-import (
-	"encoding/json"
-	"errors"
-)
+import "errors"
 
 // ErrDatabaseUnavailable reports that the database could not serve a request
 // (connection failure, timeout, shutdown, closed pool). Callers match it with
@@ -14,37 +11,27 @@ const (
 	DirectionStatusUnknown   = "unknown"
 	DirectionStatusInferred  = "inferred"
 	DirectionStatusConfirmed = "confirmed"
-
-	ValidityStatusUnknown = "unknown"
-	ValidityStatusValid   = "valid"
-	ValidityStatusInvalid = "invalid"
 )
 
-// StopPoint is one regulation point of the configured dataset. AZ is nil when
-// the direction is unknown; candidate neighbour bearings are never used here.
+// StopPoint is one search result. AZ is nil when the direction is unknown;
+// candidate neighbour bearings are never used here. Provenance, evidence and
+// dataset metadata stay in the database and are not part of this model.
 type StopPoint struct {
-	UniqueKey         string
-	AZ                *float64
-	Latitude          float64
-	Longitude         float64
-	DirectionStatus   string
-	ValidityStatus    string
-	Synthetic         bool
-	DatasetID         string
-	SourceMonth       string
-	ImputationMethod  string
-	ImputationReason  string
-	DirectionSource   string
-	DirectionEvidence json.RawMessage
-	ValidityReason    string
-	ValidityEvidence  json.RawMessage
-	DataPurpose       string
+	UniqueKey       string
+	AZ              *float64
+	Latitude        float64
+	Longitude       float64
+	DirectionStatus string
 }
 
+// StopPointDetail is the single-point view. It carries the same fields as
+// StopPoint today but is a separate type so the two views can evolve apart.
 type StopPointDetail struct {
-	StopPoint
-	CreatedAt string
-	UpdatedAt string
+	UniqueKey       string
+	AZ              *float64
+	Latitude        float64
+	Longitude       float64
+	DirectionStatus string
 }
 
 type GetStopPointByIDInput struct {

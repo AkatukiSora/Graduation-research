@@ -31,30 +31,24 @@ type StopPointHandlers struct {
 	service *service.StopPointService
 }
 
-// stopPointRangeResponse is one list item. az is null while the direction is unknown.
+// stopPointRangeResponse is one search result item. az is null while the
+// direction is unknown.
 type stopPointRangeResponse struct {
-	UniqueKey         string          `json:"uniqueKey"`
-	AZ                *string         `json:"az"`
-	Latitude          string          `json:"lat"`
-	Longitude         string          `json:"long"`
-	DirectionStatus   string          `json:"directionStatus"`
-	ValidityStatus    string          `json:"validityStatus"`
-	Synthetic         bool            `json:"synthetic"`
-	DatasetID         string          `json:"datasetId"`
-	SourceMonth       string          `json:"sourceMonth"`
-	ImputationMethod  string          `json:"imputationMethod"`
-	ImputationReason  string          `json:"imputationReason"`
-	DirectionSource   string          `json:"directionSource"`
-	DirectionEvidence json.RawMessage `json:"directionEvidence"`
-	ValidityReason    string          `json:"validityReason"`
-	ValidityEvidence  json.RawMessage `json:"validityEvidence"`
-	DataPurpose       string          `json:"dataPurpose"`
+	UniqueKey       string  `json:"uniqueKey"`
+	AZ              *string `json:"az"`
+	Latitude        string  `json:"lat"`
+	Longitude       string  `json:"long"`
+	DirectionStatus string  `json:"directionStatus"`
 }
 
+// stopPointDetailResponse is the single-point view. It has the same fields as
+// the search item today but is a distinct type so the two can diverge.
 type stopPointDetailResponse struct {
-	stopPointRangeResponse
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	UniqueKey       string  `json:"uniqueKey"`
+	AZ              *string `json:"az"`
+	Latitude        string  `json:"lat"`
+	Longitude       string  `json:"long"`
+	DirectionStatus string  `json:"directionStatus"`
 }
 
 func NewStopPointHandlers(service *service.StopPointService) *StopPointHandlers {
@@ -166,31 +160,35 @@ func parseGetByRangeInput(r *http.Request) (domain.GetStopPointsByRangeInput, er
 	}, nil
 }
 
-func toStopPointRangeResponse(stopPoint domain.StopPoint) stopPointRangeResponse {
-	var az *string
-	if stopPoint.AZ != nil {
-		formatted := strconv.FormatFloat(*stopPoint.AZ, 'f', -1, 64)
-		az = &formatted
+func formatAZ(az *float64) *string {
+	if az == nil {
+		return nil
 	}
+	formatted := strconv.FormatFloat(*az, 'f', -1, 64)
+	return &formatted
+}
 
+func formatCoordinate(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func toStopPointRangeResponse(stopPoint domain.StopPoint) stopPointRangeResponse {
 	return stopPointRangeResponse{
-		UniqueKey: stopPoint.UniqueKey, AZ: az,
-		Latitude: strconv.FormatFloat(stopPoint.Latitude, 'f', -1, 64),
-		Longitude: strconv.FormatFloat(stopPoint.Longitude, 'f', -1, 64),
-		DirectionStatus: stopPoint.DirectionStatus, ValidityStatus: stopPoint.ValidityStatus,
-		Synthetic: stopPoint.Synthetic, DatasetID: stopPoint.DatasetID, SourceMonth: stopPoint.SourceMonth,
-		ImputationMethod: stopPoint.ImputationMethod, ImputationReason: stopPoint.ImputationReason,
-		DirectionSource: stopPoint.DirectionSource, DirectionEvidence: stopPoint.DirectionEvidence,
-		ValidityReason: stopPoint.ValidityReason, ValidityEvidence: stopPoint.ValidityEvidence,
-		DataPurpose: stopPoint.DataPurpose,
+		UniqueKey:       stopPoint.UniqueKey,
+		AZ:              formatAZ(stopPoint.AZ),
+		Latitude:        formatCoordinate(stopPoint.Latitude),
+		Longitude:       formatCoordinate(stopPoint.Longitude),
+		DirectionStatus: stopPoint.DirectionStatus,
 	}
 }
 
 func toStopPointDetailResponse(stopPoint domain.StopPointDetail) stopPointDetailResponse {
 	return stopPointDetailResponse{
-		stopPointRangeResponse: toStopPointRangeResponse(stopPoint.StopPoint),
-		CreatedAt:              stopPoint.CreatedAt,
-		UpdatedAt:              stopPoint.UpdatedAt,
+		UniqueKey:       stopPoint.UniqueKey,
+		AZ:              formatAZ(stopPoint.AZ),
+		Latitude:        formatCoordinate(stopPoint.Latitude),
+		Longitude:       formatCoordinate(stopPoint.Longitude),
+		DirectionStatus: stopPoint.DirectionStatus,
 	}
 }
 

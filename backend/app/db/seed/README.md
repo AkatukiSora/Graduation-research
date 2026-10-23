@@ -158,9 +158,9 @@ diff -r \\
 
 API（`cmd/api`）は設定 `STOP_POINT_DATASET_ID` で指定した 1 つのデータセットだけを返します。未設定時の既定値は `synthetic-v1` です。設定値は空にできず、小文字英数字と `.` `_` `-`（先頭は英数字、64 文字以内）に限られます。存在しない ID に自動 fallback はありません。range は `[]`、detail は 404 になり得ます。DB 接続の health が成功していても selector の誤りは検出されないため、切替時は実データを read-back してください。
 
-埋め込み済みの `synthetic-v1` / `synthetic-v2` は合成 fixture、`nagoya-rule-test-202602-v1` は JARTIC の愛知県警 2026年02月分に由来する実在地点へ、最近傍地点を使ったテスト専用の仮方位を付けた一時データです。`dataPurpose=rule_test` と根拠フィールドで区別します。この方位は `stop_to_neighbor_proxy` であり、実道路の進行方向・車両の接近方向・規制の現行性・通知安全性を示しません。地点の有効性は `unknown` のままです。取得日時と取得時点の規約は不明であり、現在参照する利用条件は当時の取得条件の証拠ではありません。OSM はこの方式に使用しません。API の既定 selector は引き続き `synthetic-v1` で、rule-test は設定で明示的に選択した場合だけ返します。
+埋め込み済みの `synthetic-v1` / `synthetic-v2` は合成 fixture、`nagoya-rule-test-202602-v1` は JARTIC の愛知県警 2026年02月分に由来する実在地点へ、最近傍地点を使ったテスト専用の仮方位を付けた一時データです。データセットの provenance (`data_purpose=rule_test`) と DB 上の根拠列で区別し、API の応答には含めません。この方位は `stop_to_neighbor_proxy` であり、実道路の進行方向・車両の接近方向・規制の現行性・通知安全性を示しません。地点の有効性は `unknown` のままです。取得日時と取得時点の規約は不明であり、現在参照する利用条件は当時の取得条件の証拠ではありません。OSM はこの方式に使用しません。API の既定 selector は引き続き `synthetic-v1` で、rule-test は設定で明示的に選択した場合だけ返します。
 
-API range/detail は `az`（従来どおり nullable string）、方向・有効性の status/reason/evidence、`imputationMethod`、`directionSource`、`dataPurpose`、dataset ID と年月を返します。`productionApproved` と `notificationEligible` は返さず、通知可否や角度しきい値も判定しません。クライアントは根拠と不確実性を表示・考慮し、通知可否を独自に判断する必要があります。候補一覧は API に出力されません。
+API range/detail は `uniqueKey`、`lat`、`long`、`az`（nullable string）、`directionStatus`（unknown / inferred / confirmed）だけを返します。有効性、方向・有効性の reason/evidence、`imputationMethod`、`directionSource`、`dataPurpose`、dataset ID と年月、作成・更新日時は応答に含めず、DB にだけ保持します。通知可否や角度しきい値は判定せず、クライアントが `directionStatus` を見て独自に判断します。候補一覧は API に出力されません。
 
 出典・加工表示: 交通規制情報（公益財団法人日本道路交通情報センター、2026年02月分）を本プロジェクトが地域抽出・正規化し、欠損方向に近傍点 proxy を付与します。推定値は原提供者が作成・確認したものではありません。JARTIC の案内は [オープンデータ](https://www.jartic.or.jp/service/opendata/)、参照した利用条件は [利用規約](https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf) です。原取得日時および当時の適用規約は不明で、owner の受容判断は法的保証を意味しません。この作業ではデータ bundle の生成・公開、完全な機械可読 download の提供、実環境への投入・配備は行いません。
 
@@ -173,7 +173,7 @@ API range/detail は `az`（従来どおり nullable string）、方向・有効
 
 1. 旧版を保持したまま新版を validate-only し、manifest digest、DB の dataset/point/candidate 件数、根拠件数、代表 ID を確認します。bundle、notice、manifest と全 shard を一体の immutable archive として保存してください。
 2. 新 ID を `SEED_DATASET_IDS` に追加して投入し、DB read-back で件数と代表地点を確認します。各 ID の投入は個別 transaction であり、複数 ID 全体の atomicity はありません。
-3. 新 ID を含む image を build し、API の `STOP_POINT_DATASET_ID` を新 ID に変更して起動します。range/detail の `datasetId`、`az`、status、reason、evidence、`dataPurpose` と旧版の混入がないことを確認してください。未存在 ID は自動 fallback しません。
+3. 新 ID を含む image を build し、API の `STOP_POINT_DATASET_ID` を新 ID に変更して起動します。range/detail の `uniqueKey`、`az`、`directionStatus` が新版の値であることを DB の read-back と照合し、旧版の混入がないことを確認してください（応答に dataset ID は含まれないため、selector の設定値と DB の dataset ID で確認します）。未存在 ID は自動 fallback しません。
 4. rolling update 中は旧 image と新版 image の応答が一時的に混在します。全 replica の read-back が新 ID を示すまで切替完了と扱いません。問題時は旧 selector と旧 image に戻します。新 ID の投入だけでは既存 API の選択先は変わりません。
 5. 旧版の退役は任意で、切替とは別の人手承認作業です。全旧 reader の停止、旧 ID の `SEED_DATASET_IDS` からの除去、backup と rollback 期間、immutable archive/notice の保管を人が確認してから実施します。削除する場合は対象 dataset ID を明示し、同 dataset の advisory transaction lock を取得して `candidates` → `points` → `datasets` の順に同 ID 条件で削除し、件数を確認します。wildcard、`TRUNCATE`、`CASCADE`、他 ID の変更、active reader がある状態での削除は行いません。旧公開 bundle と notice は保持し、seed 設定に旧 ID を残して再投入で復活させないでください。
 

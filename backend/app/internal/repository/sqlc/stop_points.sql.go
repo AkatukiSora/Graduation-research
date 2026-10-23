@@ -17,26 +17,8 @@ SELECT
     ST_Y(p.geom::geometry)::float8 AS latitude,
     ST_X(p.geom::geometry)::float8 AS longitude,
     p.direction_degrees,
-    p.direction_status,
-    p.validity_status,
-    p.imputation_method,
-    p.imputation_reason,
-    p.direction_source,
-    p.direction_evidence,
-    p.validity_reason,
-    p.validity_evidence,
-    d.dataset_id,
-    d.source_month,
-    d.synthetic,
-    CASE
-        WHEN d.provenance->>'data_purpose' = 'rule_test' THEN 'rule_test'
-        WHEN d.synthetic THEN 'synthetic_fixture'
-        ELSE 'observational'
-    END AS data_purpose,
-    p.created_at,
-    p.updated_at
+    p.direction_status
 FROM regulation_points AS p
-JOIN regulation_datasets AS d ON d.dataset_id = p.dataset_id
 WHERE p.dataset_id = $1::text
   AND p.raw_uid = $2::text
 `
@@ -47,27 +29,16 @@ type FindRegulationPointByRawUIDParams struct {
 }
 
 type FindRegulationPointByRawUIDRow struct {
-	RawUid            string
-	Latitude          float64
-	Longitude         float64
-	DirectionDegrees  pgtype.Float8
-	DirectionStatus   string
-	ValidityStatus    string
-	ImputationMethod  string
-	ImputationReason  string
-	DirectionSource   string
-	DirectionEvidence []byte
-	ValidityReason    string
-	ValidityEvidence  []byte
-	DatasetID         string
-	SourceMonth       string
-	Synthetic         bool
-	DataPurpose       string
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
+	RawUid           string
+	Latitude         float64
+	Longitude        float64
+	DirectionDegrees pgtype.Float8
+	DirectionStatus  string
 }
 
 // Looks one point up by its source identifier inside a single dataset version.
+// Only the columns the public API exposes are selected; provenance and
+// evidence columns stay in the database.
 func (q *Queries) FindRegulationPointByRawUID(ctx context.Context, arg FindRegulationPointByRawUIDParams) (FindRegulationPointByRawUIDRow, error) {
 	row := q.db.QueryRow(ctx, findRegulationPointByRawUID, arg.DatasetID, arg.RawUid)
 	var i FindRegulationPointByRawUIDRow
@@ -77,19 +48,6 @@ func (q *Queries) FindRegulationPointByRawUID(ctx context.Context, arg FindRegul
 		&i.Longitude,
 		&i.DirectionDegrees,
 		&i.DirectionStatus,
-		&i.ValidityStatus,
-		&i.ImputationMethod,
-		&i.ImputationReason,
-		&i.DirectionSource,
-		&i.DirectionEvidence,
-		&i.ValidityReason,
-		&i.ValidityEvidence,
-		&i.DatasetID,
-		&i.SourceMonth,
-		&i.Synthetic,
-		&i.DataPurpose,
-		&i.CreatedAt,
-		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -100,24 +58,8 @@ SELECT
     ST_Y(p.geom::geometry)::float8 AS latitude,
     ST_X(p.geom::geometry)::float8 AS longitude,
     p.direction_degrees,
-    p.direction_status,
-    p.validity_status,
-    p.imputation_method,
-    p.imputation_reason,
-    p.direction_source,
-    p.direction_evidence,
-    p.validity_reason,
-    p.validity_evidence,
-    d.dataset_id,
-    d.source_month,
-    d.synthetic,
-    CASE
-        WHEN d.provenance->>'data_purpose' = 'rule_test' THEN 'rule_test'
-        WHEN d.synthetic THEN 'synthetic_fixture'
-        ELSE 'observational'
-    END AS data_purpose
+    p.direction_status
 FROM regulation_points AS p
-JOIN regulation_datasets AS d ON d.dataset_id = p.dataset_id
 WHERE p.dataset_id = $1::text
   AND ST_DWithin(
         p.geom,
@@ -139,22 +81,11 @@ type ListRegulationPointsInRangeParams struct {
 }
 
 type ListRegulationPointsInRangeRow struct {
-	RawUid            string
-	Latitude          float64
-	Longitude         float64
-	DirectionDegrees  pgtype.Float8
-	DirectionStatus   string
-	ValidityStatus    string
-	ImputationMethod  string
-	ImputationReason  string
-	DirectionSource   string
-	DirectionEvidence []byte
-	ValidityReason    string
-	ValidityEvidence  []byte
-	DatasetID         string
-	SourceMonth       string
-	Synthetic         bool
-	DataPurpose       string
+	RawUid           string
+	Latitude         float64
+	Longitude        float64
+	DirectionDegrees pgtype.Float8
+	DirectionStatus  string
 }
 
 // Geographic search inside one dataset version. The radius is in metres on the
@@ -180,17 +111,6 @@ func (q *Queries) ListRegulationPointsInRange(ctx context.Context, arg ListRegul
 			&i.Longitude,
 			&i.DirectionDegrees,
 			&i.DirectionStatus,
-			&i.ValidityStatus,
-			&i.ImputationMethod,
-			&i.ImputationReason,
-			&i.DirectionSource,
-			&i.DirectionEvidence,
-			&i.ValidityReason,
-			&i.ValidityEvidence,
-			&i.DatasetID,
-			&i.SourceMonth,
-			&i.Synthetic,
-			&i.DataPurpose,
 		); err != nil {
 			return nil, err
 		}

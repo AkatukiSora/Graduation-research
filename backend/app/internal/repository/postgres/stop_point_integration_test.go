@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -274,7 +273,7 @@ func TestIntegrationRangeRadiusBoundary(t *testing.T) {
 	}
 }
 
-func TestIntegrationSyntheticPointsExposeUnknownEvidenceAndPurpose(t *testing.T) {
+func TestIntegrationSyntheticPointsExposeUnknownDirection(t *testing.T) {
 	pool, bundle := seededPool(t)
 	repo := NewStopPointRepository(pool, syntheticDatasetID)
 	center := bundle.Dataset.Points[0]
@@ -284,16 +283,8 @@ func TestIntegrationSyntheticPointsExposeUnknownEvidenceAndPurpose(t *testing.T)
 		t.Fatalf("got %d points, err = %v", len(got), err)
 	}
 	for _, p := range got {
-		if p.AZ != nil || p.DirectionStatus != "unknown" || p.ValidityStatus != "unknown" {
-			t.Fatalf("%s: az=%v direction=%s validity=%s", p.UniqueKey, p.AZ, p.DirectionStatus, p.ValidityStatus)
-		}
-		if !p.Synthetic || p.DatasetID != syntheticDatasetID || p.SourceMonth != bundle.Manifest.SourceMonth || p.DataPurpose != "synthetic_fixture" {
-			t.Fatalf("%s: dataset fields = %+v", p.UniqueKey, p)
-		}
-		if p.ImputationMethod != "none" || p.ImputationReason != "legacy_unrecorded" ||
-			p.DirectionSource != "unknown" || string(p.DirectionEvidence) != "{}" ||
-			p.ValidityReason != "legacy_unrecorded" || string(p.ValidityEvidence) != "{}" {
-			t.Fatalf("%s: evidence fields = %+v", p.UniqueKey, p)
+		if p.AZ != nil || p.DirectionStatus != "unknown" {
+			t.Fatalf("%s: az=%v direction=%s", p.UniqueKey, p.AZ, p.DirectionStatus)
 		}
 	}
 }
@@ -311,20 +302,8 @@ func TestIntegrationFindByIDUsesDatabaseValues(t *testing.T) {
 	if detail.UniqueKey != want.RawUID || math.Abs(detail.Latitude-want.Lat) > 1e-9 || math.Abs(detail.Longitude-want.Lon) > 1e-9 {
 		t.Fatalf("detail = %+v, want %s at (%v, %v)", detail, want.RawUID, want.Lat, want.Lon)
 	}
-	if detail.AZ != nil || detail.DatasetID != syntheticDatasetID {
+	if detail.AZ != nil || detail.DirectionStatus != "unknown" {
 		t.Fatalf("detail = %+v", detail)
-	}
-
-	var created, updated time.Time
-	if err := pool.QueryRow(ctx, `SELECT created_at, updated_at FROM regulation_points WHERE dataset_id = $1 AND raw_uid = $2`,
-		syntheticDatasetID, want.RawUID).Scan(&created, &updated); err != nil {
-		t.Fatal(err)
-	}
-	if detail.CreatedAt != created.UTC().Format(time.RFC3339Nano) || detail.UpdatedAt != updated.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("timestamps = %s / %s, want the stored %s / %s", detail.CreatedAt, detail.UpdatedAt, created, updated)
-	}
-	if !strings.HasSuffix(detail.CreatedAt, "Z") {
-		t.Fatalf("created_at must be UTC: %s", detail.CreatedAt)
 	}
 
 	missing, found, err := repo.FindByID(ctx, "NO-SUCH-RAW-UID")
@@ -353,7 +332,7 @@ func TestIntegrationOtherDatasetsAreIsolated(t *testing.T) {
 	otherRepo := NewStopPointRepository(pool, other)
 
 	detail, found, err := syntheticRepo.FindByID(ctx, shared)
-	if err != nil || !found || detail.DatasetID != syntheticDatasetID || math.Abs(detail.Latitude-1.0) > 1e-9 {
+	if err != nil || !found || math.Abs(detail.Latitude-1.0) > 1e-9 {
 		t.Fatalf("synthetic repository returned %+v (found %t, err %v)", detail, found, err)
 	}
 	if _, found, _ := syntheticRepo.FindByID(ctx, "OTHER-ONLY"); found {
@@ -365,7 +344,7 @@ func TestIntegrationOtherDatasetsAreIsolated(t *testing.T) {
 	}
 
 	otherDetail, found, err := otherRepo.FindByID(ctx, shared)
-	if err != nil || !found || otherDetail.DatasetID != other || math.Abs(otherDetail.Latitude-10) > 1e-9 {
+	if err != nil || !found || math.Abs(otherDetail.Latitude-10) > 1e-9 {
 		t.Fatalf("other repository returned %+v (found %t, err %v)", otherDetail, found, err)
 	}
 	otherRange, err := otherRepo.FindByRange(ctx, domain.GetStopPointsByRangeInput{Latitude: 10, Longitude: 10, RadiusMeters: 100000, Limit: 500})
@@ -397,16 +376,13 @@ func TestIntegrationRangeOrdersEqualDistancesByEntityID(t *testing.T) {
 	}
 }
 
-func TestIntegrationRuleTestPurposeAndDirectionEvidenceAreReturned(t *testing.T) {
+func TestIntegrationInferredDirectionIsReturnedWithoutEvidence(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	dataset := insertScratchDataset(t, pool, true, false, []scratchPoint{
 		{entity: "e:rule", raw: "RULE-TEST-POINT", lon: 30, lat: 30, direction: "unknown", validity: "unknown"},
 		{entity: "e:neighbor", raw: "RULE-TEST-NEIGHBOR", lon: 30.0001, lat: 30, direction: "unknown", validity: "unknown"},
 	})
-	if _, err := pool.Exec(ctx, `UPDATE regulation_datasets SET provenance='{"data_purpose":"rule_test"}'::jsonb WHERE dataset_id=$1`, dataset); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := pool.Exec(ctx, `UPDATE regulation_points SET
 		direction_degrees=90, direction_status='inferred', imputation_method='nearest_stop_reference',
 		imputation_reason='topology_proxy_unverified', direction_source='nearest_stop',
@@ -424,22 +400,17 @@ func TestIntegrationRuleTestPurposeAndDirectionEvidenceAreReturned(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("found=%t err=%v", found, err)
 	}
-	if detail.DataPurpose != "rule_test" || detail.ImputationMethod != "nearest_stop_reference" ||
-		detail.ImputationReason != "topology_proxy_unverified" || detail.DirectionSource != "nearest_stop" ||
-		detail.ValidityReason != "source_validity_unverified" || len(detail.DirectionEvidence) == 0 || string(detail.ValidityEvidence) != "{}" {
-		t.Fatalf("rule-test detail omitted evidence/purpose: %+v", detail)
-	}
-	var evidence map[string]any
-	if err := json.Unmarshal(detail.DirectionEvidence, &evidence); err != nil || evidence["direction_semantics"] != "stop_to_neighbor_proxy" {
-		t.Fatalf("direction evidence is not the stored JSON object: %s err=%v", detail.DirectionEvidence, err)
+	if detail.AZ == nil || *detail.AZ != 90 || detail.DirectionStatus != "inferred" {
+		t.Fatalf("detail = %+v, want az 90 and inferred", detail)
 	}
 	rangePoints, err := repo.FindByRange(ctx, domain.GetStopPointsByRangeInput{Latitude: 30, Longitude: 30, RadiusMeters: 1000, Limit: 10})
-	if err != nil || len(rangePoints) != 2 || rangePoints[0].DataPurpose != "rule_test" {
+	if err != nil || len(rangePoints) != 2 || rangePoints[0].UniqueKey != "RULE-TEST-POINT" ||
+		rangePoints[0].AZ == nil || *rangePoints[0].AZ != 90 || rangePoints[0].DirectionStatus != "inferred" {
 		t.Fatalf("range = %+v err=%v", rangePoints, err)
 	}
 }
 
-func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsProvenance(t *testing.T) {
+func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsInferredDirection(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	bundle, err := seed.Load(seeddata.FS(), nagoyaRuleTestDatasetID)
@@ -462,16 +433,8 @@ func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsProvenance(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("find embedded rule_test point: found=%t err=%v", found, err)
 	}
-	if detail.DataPurpose != "rule_test" || detail.DatasetID != nagoyaRuleTestDatasetID ||
-		detail.DirectionStatus != "inferred" || detail.ValidityStatus != "unknown" ||
-		detail.ImputationMethod != "nearest_stop_reference" || detail.DirectionSource != "nearest_stop" ||
-		detail.ValidityReason != "source_validity_unverified" || detail.AZ == nil {
-		t.Fatalf("stored rule_test metadata is incomplete: %+v", detail)
-	}
-	var evidence map[string]any
-	if err := json.Unmarshal(detail.DirectionEvidence, &evidence); err != nil ||
-		evidence["direction_semantics"] != "stop_to_neighbor_proxy" || evidence["neighbor_entity_id"] == "" {
-		t.Fatalf("stored direction evidence is incomplete: %s err=%v", detail.DirectionEvidence, err)
+	if detail.DirectionStatus != "inferred" || detail.AZ == nil {
+		t.Fatalf("stored inferred direction is incomplete: %+v", detail)
 	}
 
 	rangePoints, err := repo.FindByRange(ctx, domain.GetStopPointsByRangeInput{
@@ -481,12 +444,11 @@ func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsProvenance(t *testing.T)
 		t.Fatalf("range query for embedded rule_test point: %v", err)
 	}
 	for _, point := range rangePoints {
-		if point.UniqueKey == rawUID && point.DataPurpose == "rule_test" &&
-			point.DirectionEvidence != nil && string(point.DirectionEvidence) != "{}" {
+		if point.UniqueKey == rawUID && point.DirectionStatus == "inferred" && point.AZ != nil {
 			return
 		}
 	}
-	t.Fatalf("range result did not preserve rule_test purpose/evidence: %+v", rangePoints)
+	t.Fatalf("range result did not preserve the inferred direction: %+v", rangePoints)
 }
 
 func TestIntegrationDatabaseFailureMapsToUnavailableSentinel(t *testing.T) {

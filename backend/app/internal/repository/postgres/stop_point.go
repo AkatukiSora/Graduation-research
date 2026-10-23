@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/domain"
@@ -36,7 +36,7 @@ func NewStopPointRepository(pool *pgxpool.Pool, datasetID string) *StopPointRepo
 }
 
 // FindByID looks a point up by raw_uid. found is false, without an error, when
-// the dataset has no such point. Timestamps are the stored row values.
+// the dataset has no such point.
 func (r *StopPointRepository) FindByID(ctx context.Context, id string) (domain.StopPointDetail, bool, error) {
 	// PostgreSQL text cannot hold NUL bytes or invalid UTF-8, so such an
 	// identifier cannot exist in the dataset.
@@ -56,12 +56,11 @@ func (r *StopPointRepository) FindByID(ctx context.Context, id string) (domain.S
 	}
 
 	return domain.StopPointDetail{
-		StopPoint: toStopPoint(row.RawUid, row.Latitude, row.Longitude, row.DirectionDegrees.Valid, row.DirectionDegrees.Float64,
-			row.DirectionStatus, row.ValidityStatus, row.DatasetID, row.SourceMonth, row.Synthetic,
-			row.ImputationMethod, row.ImputationReason, row.DirectionSource, row.DirectionEvidence,
-			row.ValidityReason, row.ValidityEvidence, row.DataPurpose),
-		CreatedAt: formatTimestamp(row.CreatedAt.Time),
-		UpdatedAt: formatTimestamp(row.UpdatedAt.Time),
+		UniqueKey:       row.RawUid,
+		AZ:              azimuth(row.DirectionDegrees),
+		Latitude:        row.Latitude,
+		Longitude:       row.Longitude,
+		DirectionStatus: row.DirectionStatus,
 	}, true, nil
 }
 
@@ -86,35 +85,23 @@ func (r *StopPointRepository) FindByRange(ctx context.Context, input domain.GetS
 
 	stopPoints := make([]domain.StopPoint, 0, len(rows))
 	for _, row := range rows {
-		stopPoints = append(stopPoints, toStopPoint(row.RawUid, row.Latitude, row.Longitude, row.DirectionDegrees.Valid, row.DirectionDegrees.Float64,
-			row.DirectionStatus, row.ValidityStatus, row.DatasetID, row.SourceMonth, row.Synthetic,
-			row.ImputationMethod, row.ImputationReason, row.DirectionSource, row.DirectionEvidence,
-			row.ValidityReason, row.ValidityEvidence, row.DataPurpose))
+		stopPoints = append(stopPoints, domain.StopPoint{
+			UniqueKey:       row.RawUid,
+			AZ:              azimuth(row.DirectionDegrees),
+			Latitude:        row.Latitude,
+			Longitude:       row.Longitude,
+			DirectionStatus: row.DirectionStatus,
+		})
 	}
 
 	return stopPoints, nil
 }
 
-func toStopPoint(rawUID string, latitude, longitude float64, hasDirection bool, direction float64,
-	directionStatus, validityStatus, datasetID, sourceMonth string, synthetic bool,
-	imputationMethod, imputationReason, directionSource string, directionEvidence []byte,
-	validityReason string, validityEvidence []byte, dataPurpose string,
-) domain.StopPoint {
-	var az *float64
-	if hasDirection {
-		az = &direction
+// azimuth returns nil while the direction is unknown.
+func azimuth(value pgtype.Float8) *float64 {
+	if !value.Valid {
+		return nil
 	}
-
-	return domain.StopPoint{
-		UniqueKey: rawUID, AZ: az, Latitude: latitude, Longitude: longitude,
-		DirectionStatus: directionStatus, ValidityStatus: validityStatus, Synthetic: synthetic,
-		DatasetID: datasetID, SourceMonth: sourceMonth, ImputationMethod: imputationMethod,
-		ImputationReason: imputationReason, DirectionSource: directionSource,
-		DirectionEvidence: append([]byte(nil), directionEvidence...), ValidityReason: validityReason,
-		ValidityEvidence: append([]byte(nil), validityEvidence...), DataPurpose: dataPurpose,
-	}
-}
-
-func formatTimestamp(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
+	degrees := value.Float64
+	return &degrees
 }
