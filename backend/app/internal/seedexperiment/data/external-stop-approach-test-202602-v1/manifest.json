@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "dataset_id": "external-stop-approach-test-202602-v1",
+  "source_month": "202602",
+  "data_purpose": "direction_test",
+  "production_approved": false,
+  "confidence_semantics": "not_provided",
+  "rows": 2333,
+  "counts": {
+    "teacher": {
+      "rows": 394,
+      "inferred": 388,
+      "unknown": 6
+    },
+    "target": {
+      "rows": 1939,
+      "inferred": 1937,
+      "unknown": 2
+    }
+  },
+  "source_semantics": "vehicle_approach_to_stop_estimate",
+  "data_sha256": "02eeb6998b5e926844448b4260d29c95f5b9a8a1b4216397789cbf1973493ebe",
+  "provenance": {
+    "candidate_reference": {
+      "repository": "https://github.com/AkatukiSora/Graduation-research.git",
+      "branch": "graduation/review-direction-candidates",
+      "commit": "638e6008501e3055927f3f4be8365968aecdb31b",
+      "candidate_dataset_id": "c1r1-kansai-chubu-v1",
+      "candidate_manifest_sha256": "c0bad57f2a17db0e1a67288770aab00d641e9756da6a5106197e220311f07fb2",
+      "files": {
+        "teacher": {
+          "sha256": "3ecd92c3c10349cfc750d7523732132b466636e2ca6b8b34dd4665229d78681b",
+          "source_csv_sha256": "2a69fbe3a130da8fb3a48a91e38e8c9a2bd13561dfeec9c258a3f30284a222c1",
+          "rows": 394
+        },
+        "target": {
+          "sha256": "7829d7733625edd3e9f6b7fafc578529697443db286ae9a6aada275ffaacd320",
+          "source_csv_sha256": "0d902b472980d40fa7b472998e3424c73ad4730108fac9655ac1b23e82ee573d",
+          "rows": 1939
+        }
+      },
+      "inference_fields_only": [
+        "uniqueKey",
+        "lat",
+        "lon"
+      ],
+      "excluded_from_inference": [
+        "existing direction",
+        "entrance/truth",
+        "confidence",
+        "status",
+        "candidate metadata"
+      ]
+    },
+    "external_source": {
+      "archive_sha1": "9c2a7d06cb2ffeb0fe8424065236e157be1908e6",
+      "archive_bytes": 732333937,
+      "python_source_sha256": {
+        "azimth/local_stop_approach.py": "50cd9e0e2a8e83c4a8f151f9e5f49d0bcd8385e6516dad7b10d8841b3ff662bf",
+        "azimth/stop_approach.py": "0a8e15b2613846da39956b59b0f19d83f9c04a52100fef048ba8cbdd0a029ce4",
+        "azimth/test_local_stop_approach.py": "2c0f616e03d4576df0b18e91aa868a2054e198fd0694266962d590eb3878ad43",
+        "azimth/test_stop_approach.py": "27eb99d86fd6552cd3f67e1df7b5640c6d82d892880bb1d633705f8421fc675f"
+      },
+      "redistributed": false,
+      "license_status": "unconfirmed; original external source is private and excluded from generated output",
+      "online_code": "not called; local_stop_approach.prepare_database/calculate only"
+    },
+    "osm_inputs": {
+      "teacher": {
+        "path": "/opt/data/cache/nkc-osm/kansai-261020.osm.pbf",
+        "bytes": 354084022,
+        "sha256": "c09d28306826347c3b9b15cf4c0c7a5a44c3f5c041c5d1bd71056a6fd3ce0dcb"
+      },
+      "target": {
+        "path": "/opt/data/cache/nkc-osm/chubu-261013.osm.pbf",
+        "bytes": 512323029,
+        "sha256": "9f05616dc818465ae585978b21a7160b9734305c0bfea903da4c3f2c9bde2650"
+      }
+    },
+    "osm_hash_references": {
+      "teacher": {
+        "reference": "previous Shiga run metadata t_01b4b913/shiga-run-metadata.json",
+        "reference_sha256": "e4205352da47d2c913bc35fab39cee54cb2d4ebb711114200fbf1eb14b953371"
+      },
+      "target": {
+        "reference": "/opt/data/workspaces/graduation-research-nkc-p-v6/backend/generation_io/rf/environment-contract.json",
+        "reference_sha256": "08f432b60c91eff2e659abbc72aa32a5c07a9230751071de408082dc2e75624e",
+        "field": "inputs.target_pbf_sha256"
+      }
+    },
+    "regional_bounds_degrees": {
+      "teacher": [
+        135.79645188373098,
+        34.88421367121099,
+        136.44831034743302,
+        35.504172380636
+      ],
+      "target": [
+        136.87043,
+        35.08266,
+        136.95361,
+        35.15753
+      ]
+    },
+    "radius_m": 80,
+    "input_hashes": {
+      "teacher": {
+        "path": "/opt/data/workspaces/graduation-external-seed/private/inputs/teacher.json",
+        "rows": 394,
+        "sha256": "1bb87846b916bcf0722f2dfbf71bdf0791b181f1e7132f215256d92cb746ee2d",
+        "keys": [
+          "uniqueKey",
+          "lat",
+          "lon"
+        ]
+      },
+      "target": {
+        "path": "/opt/data/workspaces/graduation-external-seed/private/inputs/target.json",
+        "rows": 1939,
+        "sha256": "0dff6cc1c29a745174e292441ea2caee7107f4a16ce2142642c1afe1197db705",
+        "keys": [
+          "uniqueKey",
+          "lat",
+          "lon"
+        ]
+      }
+    },
+    "run_metadata": {
+      "teacher": {
+        "prepare": {
+          "subset": "teacher",
+          "mode": "prepare",
+          "input_rows": 394,
+          "bounds": [
+            135.79645188373098,
+            34.88421367121099,
+            136.44831034743302,
+            35.504172380636
+          ],
+          "radius_m": 80,
+          "pbf": "/opt/data/cache/nkc-osm/kansai-261020.osm.pbf",
+          "pbf_bytes": 354084022,
+          "pbf_sha256": "c09d28306826347c3b9b15cf4c0c7a5a44c3f5c041c5d1bd71056a6fd3ce0dcb",
+          "adapter": "in-memory AICHI_BOUNDS replacement only; original source unchanged",
+          "network": "socket audit deny; online main/fetch_ways not invoked",
+          "database": "/opt/data/workspaces/graduation-external-seed/private/databases/teacher.sqlite",
+          "elapsed_seconds": 240.83387815300375,
+          "external_return_code": 0,
+          "wrapper_exit_code": 0
+        },
+        "calculate": {
+          "subset": "teacher",
+          "mode": "calculate",
+          "input_rows": 394,
+          "bounds": [
+            135.79645188373098,
+            34.88421367121099,
+            136.44831034743302,
+            35.504172380636
+          ],
+          "radius_m": 80,
+          "pbf": "/opt/data/cache/nkc-osm/kansai-261020.osm.pbf",
+          "pbf_bytes": 354084022,
+          "pbf_sha256": "c09d28306826347c3b9b15cf4c0c7a5a44c3f5c041c5d1bd71056a6fd3ce0dcb",
+          "adapter": "in-memory AICHI_BOUNDS replacement only; original source unchanged",
+          "network": "socket audit deny; online main/fetch_ways not invoked",
+          "database": "/opt/data/workspaces/graduation-external-seed/private/databases/teacher.sqlite",
+          "output": "/opt/data/workspaces/graduation-external-seed/private/raw/teacher.json",
+          "output_sha256": "407884f0dfc292b5ccb2140c3893b7e305fcf4a0c4ec836dc4a5174cb04ba531",
+          "external_return_code": 1,
+          "expected_abstentions": 6,
+          "elapsed_seconds": 1.0805175190034788,
+          "wrapper_exit_code": 0,
+          "return_code_note": "external status 1 means ordinary unknown rows; output retained and structurally validated"
+        }
+      },
+      "target": {
+        "prepare": {
+          "subset": "target",
+          "mode": "prepare",
+          "input_rows": 1939,
+          "bounds": [
+            136.87043,
+            35.08266,
+            136.95361,
+            35.15753
+          ],
+          "radius_m": 80,
+          "pbf": "/opt/data/cache/nkc-osm/chubu-261013.osm.pbf",
+          "pbf_bytes": 512323029,
+          "pbf_sha256": "9f05616dc818465ae585978b21a7160b9734305c0bfea903da4c3f2c9bde2650",
+          "adapter": "in-memory AICHI_BOUNDS replacement only; original source unchanged",
+          "network": "socket audit deny; online main/fetch_ways not invoked",
+          "database": "/opt/data/workspaces/graduation-external-seed/private/databases/target.sqlite",
+          "elapsed_seconds": 287.4445388739987,
+          "external_return_code": 0,
+          "wrapper_exit_code": 0
+        },
+        "calculate": {
+          "subset": "target",
+          "mode": "calculate",
+          "input_rows": 1939,
+          "bounds": [
+            136.87043,
+            35.08266,
+            136.95361,
+            35.15753
+          ],
+          "radius_m": 80,
+          "pbf": "/opt/data/cache/nkc-osm/chubu-261013.osm.pbf",
+          "pbf_bytes": 512323029,
+          "pbf_sha256": "9f05616dc818465ae585978b21a7160b9734305c0bfea903da4c3f2c9bde2650",
+          "adapter": "in-memory AICHI_BOUNDS replacement only; original source unchanged",
+          "network": "socket audit deny; online main/fetch_ways not invoked",
+          "database": "/opt/data/workspaces/graduation-external-seed/private/databases/target.sqlite",
+          "output": "/opt/data/workspaces/graduation-external-seed/private/raw/target.json",
+          "output_sha256": "2be3498b3c003fffa9f537f54836e7aa937e4d6ba61dc2504780f7170d98ab8a",
+          "external_return_code": 1,
+          "expected_abstentions": 2,
+          "elapsed_seconds": 5.94213386499905,
+          "wrapper_exit_code": 0,
+          "return_code_note": "external status 1 means ordinary unknown rows; output retained and structurally validated"
+        }
+      }
+    },
+    "candidate_direction_comparison": {
+      "teacher": {
+        "interpretation": "directional agreement with existing candidate predictions; not ground-truth accuracy",
+        "candidate_inferred": 346,
+        "external_inferred": 388,
+        "both_inferred": 346,
+        "exact_agreement": 0,
+        "within_20_degrees": 294,
+        "over_20_degrees": 52,
+        "opposite_160_degrees_or_more": 8,
+        "candidate_only": 0,
+        "external_only": 42,
+        "neither": 6,
+        "median_absolute_circular_difference_degrees": 0.332025281609603,
+        "mean_absolute_circular_difference_degrees": 15.503503064753172
+      },
+      "target": {
+        "interpretation": "directional agreement with existing candidate predictions; not ground-truth accuracy",
+        "candidate_inferred": 1859,
+        "external_inferred": 1937,
+        "both_inferred": 1858,
+        "exact_agreement": 1,
+        "within_20_degrees": 1753,
+        "over_20_degrees": 105,
+        "opposite_160_degrees_or_more": 40,
+        "candidate_only": 1,
+        "external_only": 79,
+        "neither": 1,
+        "median_absolute_circular_difference_degrees": 0.2632896891680332,
+        "mean_absolute_circular_difference_degrees": 7.275314241639206
+      }
+    },
+    "previous_shiga_evaluation_comparison": {
+      "historical_evidence": "t_01b4b913/shiga-comparison-evidence.tar.gz; row-level output intentionally absent",
+      "historical_evidence_archive_sha256": "58c46b26ff8f07be2d7e2003a7628bb36e5cb2b8fcb283f7b5c535a3690577d2",
+      "historical_metrics_sha256": "f7ca79997aa545c5ab39d4d4133e09acd0626dc1617f50afd811a80e87255837",
+      "historical_rows": 394,
+      "historical_inferred": 388,
+      "historical_correct20": 318,
+      "historical_accuracy20": 0.8195876288659794,
+      "fresh_inferred": 388,
+      "inferred_count_delta": 0,
+      "row_level_prediction_comparison": "not_available: archived evidence contains aggregate metrics but not prior row-level output or raw ground truth"
+    },
+    "evaluation_scope": {
+      "candidate_comparison_is_ground_truth": false,
+      "fresh_target_accuracy_measured": false,
+      "fresh_teacher_ground_truth_re_evaluation": false,
+      "note": "Teacher comparison is aggregate-count agreement with the archived 388-inference evaluation; archived row outputs and ground truth are absent. Candidate-direction comparisons are agreement only, not accuracy."
+    },
+    "attribution": {
+      "reference": "JARTIC-derived 202602 candidate dataset; source CSV hashes recorded above; raw CSV is not included",
+      "osm": "© OpenStreetMap contributors; OSM data subject to ODbL 1.0",
+      "note": "Attribution is recorded for provenance; external implementation redistribution/license remains unconfirmed."
+    },
+    "production_approved": false,
+    "generated_by": "team-internal experimental run; no production integration"
+  }
+}

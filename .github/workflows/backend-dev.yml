@@ -76,7 +76,21 @@ jobs:
 
       - name: Go Build
         if: needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'
-        run: go build ./cmd/api ./cmd/migrate
+        run: go build ./cmd/api ./cmd/migrate ./cmd/seed
+
+      - name: Go Tests
+        if: needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'
+        run: go test ./...
+
+      - name: Go Vet
+        if: needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'
+        run: go vet ./...
+
+      - name: Validate Embedded Seed Data
+        if: needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'
+        run: |
+          go run ./cmd/seed --validate-only
+          go run ./cmd/seed --experimental-directions --validate-only --dataset external-stop-approach-test-202602-v1
 
       - name: Validate Migrations
         if: needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.workflow_changed == 'true'

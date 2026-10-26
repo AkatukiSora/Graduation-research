@@ -126,6 +126,22 @@ def insert_point(entity, uid, direction="NULL", direction_status="unknown", vali
     return f"INSERT INTO regulation_points ({', '.join(columns)}) VALUES ({', '.join(values)});"
 
 
+def insert_experimental_dataset(dataset_id="exp1", digest="e" * 64, row_count=2, purpose="direction_test", approved="false", provenance="'{}'::jsonb"):
+    return ("INSERT INTO experimental_direction_datasets "
+            "(dataset_id, content_sha256, row_count, data_purpose, production_approved, provenance) VALUES "
+            f"('{dataset_id}', '{digest}', {row_count}, '{purpose}', {approved}, {provenance});")
+
+
+def insert_experimental_estimate(entity, uid, direction="90", status="inferred", subset="teacher",
+                                 source="external_local_stop_approach", confidence="NULL", error="NULL",
+                                 dataset="exp1", lon=135.9, lat=35.1):
+    return ("INSERT INTO experimental_direction_estimates "
+            "(dataset_id, entity_id, raw_uid, subset, geom, direction_degrees, direction_status, source, confidence, error) VALUES "
+            f"('{dataset}', '{entity}', '{uid}', '{subset}', "
+            f"ST_SetSRID(ST_MakePoint({lon},{lat}),4326)::geography, {direction}, '{status}', "
+            f"'{source}', {confidence}, {error});")
+
+
 def insert_candidate(source, neighbor, rank: int = 1, distance: "float | str" = 10.0, bearing: "float | str" = 45.0, dataset="ds1",
                      semantics="candidate_point_neighbor_only", approved="false"):
     return ("INSERT INTO regulation_candidates (dataset_id, source_entity_id, neighbor_entity_id, rank,"
@@ -138,13 +154,43 @@ def validate(db):
     # Baseline objects are untouched and still usable.
     assert expect_ok(db, "SELECT count(*) FROM stop_signs") == "0"
     tables = expect_ok(db, "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables"
-                           " WHERE table_schema='public' AND table_name LIKE 'regulation_%'")
-    assert tables == "regulation_candidates,regulation_datasets,regulation_points", tables
+                           " WHERE table_schema='public' AND (table_name LIKE 'regulation_%' OR table_name LIKE 'experimental_direction_%')")
+    assert tables == "experimental_direction_datasets,experimental_direction_estimates,regulation_candidates,regulation_datasets,regulation_points", tables
     index = expect_ok(db, "SELECT indexdef FROM pg_indexes WHERE indexname='idx_regulation_points_geom'")
     assert "USING gist" in index, index
     privilege = expect_ok(db, "SELECT bool_and(has_table_privilege('gr9app', 'public.'||t, 'SELECT')) FROM"
                               " unnest(ARRAY['regulation_datasets','regulation_points','regulation_candidates']) t")
     assert privilege == "t", privilege
+    experimental_privilege = expect_ok(db, "SELECT bool_or(has_table_privilege('gr9app', 'public.'||t, 'SELECT')) FROM"
+                                          " unnest(ARRAY['experimental_direction_datasets','experimental_direction_estimates']) t")
+    assert experimental_privilege == "f", experimental_privilege
+
+    expect_ok(db, insert_experimental_dataset())
+    expect_error(db, insert_experimental_dataset("exp2", digest="e" * 64), "experimental_direction_datasets_content_sha256_key")
+    expect_error(db, insert_experimental_dataset("bad-digest", digest="E" * 64), "experimental_direction_datasets_digest_format")
+    expect_error(db, insert_experimental_dataset("bad-count", digest="f" * 64, row_count=0), "experimental_direction_datasets_row_count_positive")
+    expect_error(db, insert_experimental_dataset("bad-purpose", digest="1" * 64, purpose="production"), "experimental_direction_datasets_data_purpose_test_only")
+    expect_error(db, insert_experimental_dataset("bad-approval", digest="2" * 64, approved="true"), "experimental_direction_datasets_not_production_approved")
+    expect_error(db, insert_experimental_dataset("bad-provenance", digest="3" * 64, provenance="'[]'::jsonb"), "experimental_direction_datasets_provenance_object")
+    expect_ok(db, insert_experimental_estimate("exp-inferred", "expuid1", direction="0", lon=135.91, lat=35.11))
+    expect_ok(db, insert_experimental_estimate("exp-unknown", "expuid2", direction="NULL", status="unknown", subset="target",
+                                                error="'no approach direction'", lon=135.92, lat=35.12))
+    expect_error(db, insert_experimental_estimate("bad-subset", "expuid3", subset="other"), "experimental_direction_estimates_subset_values")
+    expect_error(db, insert_experimental_estimate("bad-angle-high", "expuid4", direction="360"), "experimental_direction_estimates_direction_range")
+    expect_error(db, insert_experimental_estimate("bad-angle-low", "expuid5", direction="-1"), "experimental_direction_estimates_direction_range")
+    expect_error(db, insert_experimental_estimate("bad-angle-nan", "expuid6", direction="'NaN'"), "experimental_direction_estimates_direction_range")
+    expect_error(db, insert_experimental_estimate("bad-angle-inf", "expuid7", direction="'Infinity'"), "experimental_direction_estimates_direction_range")
+    expect_error(db, insert_experimental_estimate("bad-angle-negative-inf", "expuid8", direction="'-Infinity'"), "experimental_direction_estimates_direction_range")
+    expect_error(db, insert_experimental_estimate("bad-consistency", "expuid9", direction="0", status="unknown"), "experimental_direction_estimates_direction_consistency")
+    expect_error(db, insert_experimental_estimate("bad-consistency-null", "expuid10", direction="NULL", status="inferred"), "experimental_direction_estimates_direction_consistency")
+    expect_error(db, insert_experimental_estimate("bad-source", "expuid11", source="osm_fusion"), "experimental_direction_estimates_source_only")
+    expect_error(db, insert_experimental_estimate("bad-confidence", "expuid12", confidence="0.5"), "experimental_direction_estimates_confidence_null")
+    expect_error(db, insert_experimental_estimate("bad-unknown-error", "expuid13", direction="NULL", status="unknown"), "experimental_direction_estimates_error_consistency")
+    expect_error(db, insert_experimental_estimate("bad-empty-error", "expuid14", direction="NULL", status="unknown", error="'  '"), "experimental_direction_estimates_error_consistency")
+    expect_error(db, insert_experimental_estimate("bad-inferred-error", "expuid15", error="'unexpected'"), "experimental_direction_estimates_error_consistency")
+    expect_error(db, insert_experimental_estimate("bad-parent", "expuid16", dataset="missing"), "experimental_direction_estimates_dataset_id_fkey")
+    expect_error(db, insert_experimental_estimate("exp-inferred", "expuid3"), "experimental_direction_estimates_pkey")
+    expect_error(db, insert_experimental_estimate("exp-new", "expuid1"), "experimental_direction_estimates_dataset_id_raw_uid_key")
 
     expect_ok(db, insert_dataset())
     expect_error(db, insert_dataset("ds2", digest=DIGEST), "regulation_datasets_content_sha256_key")

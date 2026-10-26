@@ -154,6 +154,24 @@ diff -r \\
 本番用データが承認・検証済みになったら、内容の置換ではなく新しい immutable dataset ID を作ります。`immutable dataset の切替・退役手順` に従って新 ID を投入して read-back し、その後に `STOP_POINT_DATASET_ID` を切り替えます。rule-test は全 reader と `SEED_DATASET_IDS` から外した後、同手順の明示的な退役承認・削除手順で撤去してください。この説明は手順のみで、本番投入・selector 変更・退役は実行しません。
 
 
+## 実験専用の外部方位データセット
+
+`external-stop-approach-test-202602-v1` は、既存候補から固定した teacher 394 地点・target 1,939 地点について、チーム内でオフライン生成した実験用推定値です。保存先は `experimental_direction_datasets` / `experimental_direction_estimates` で、`regulation_points`、`regulation_candidates`、`SEED_DATASET_IDS`、API selector から分離しています。既存 API はこれらのテーブルを読みません。migration では、既定の全テーブル SELECT 権限を打ち消すため、実行時の読み取り専用ロール `gr9app` から両テーブルの権限をすべて取り消します。
+
+この値は外部実装 `local_stop_approach` による車両接近方位の推定で、公式な標識方位・規制現況・通知安全性を示しません。2,333 行のうち teacher は inferred 388 / unknown 6、target は inferred 1,937 / unknown 2 です。unknown 行とその理由は保持し、全行で `confidence` は `NULL`、保存時は `production_approved=false` / `data_purpose=direction_test` を固定します。外部実装の再配布ライセンスは未確認であり、その原コード、CSV、PBF、SQLite DB は含めず、チーム内で生成した値と provenance manifest のみを埋め込みます。
+
+出典表示は、JARTIC 由来 2026年02月候補データと OpenStreetMap contributors（ODbL 1.0）です。外部方位は JARTIC/OSM が作成・確認したものではありません。90% の正解目標は達成しておらず、target の正解精度は未測定です。既存候補との方位一致は正解率を意味しません。
+
+### 明示的な検証・投入
+
+```sh
+cd backend/app
+go run ./cmd/seed --experimental-directions --validate-only --dataset external-stop-approach-test-202602-v1
+go run ./cmd/seed --experimental-directions --apply --dataset external-stop-approach-test-202602-v1
+```
+
+`--experimental-directions` と dataset ID の両方が必須です。validate-only は DB に接続しません。apply は既存 CLI と同じ DB 設定を使い、1 トランザクション・dataset ID advisory lock・digest conflict 拒否・全行 read-back を行います。失敗時は transaction を rollback します。投入は使い捨ての local PostGIS でのみ実施してください。通常の `--validate-only` には実験データが含まれず、`migrate` の `SEED_DATASET_IDS` にも追加されません。本番 DB への投入、API での選択、配備・有効化はこの変更の対象外です。
+
 ## API が参照するデータセット
 
 API（`cmd/api`）は設定 `STOP_POINT_DATASET_ID` で指定した 1 つのデータセットだけを返します。未設定時の既定値は `synthetic-v1` です。設定値は空にできず、小文字英数字と `.` `_` `-`（先頭は英数字、64 文字以内）に限られます。存在しない ID に自動 fallback はありません。range は `[]`、detail は 404 になり得ます。DB 接続の health が成功していても selector の誤りは検出されないため、切替時は実データを read-back してください。

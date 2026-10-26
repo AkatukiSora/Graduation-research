@@ -11,6 +11,7 @@ import (
 
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/seed"
 	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/seeddata"
+	"github.com/NKC-CV2026/Graduation-research/backend/app/internal/seedexperiment"
 )
 
 type fakeApplier struct {
@@ -28,6 +29,28 @@ func runCLI(t *testing.T, fsys fs.FS, applier *fakeApplier, args ...string) (int
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), args, &stdout, &stderr, environment{fsys: fsys, apply: applier.apply})
+	return code, stdout.String(), stderr.String()
+}
+
+type fakeExperimentalApplier struct {
+	calls  int
+	result seedexperiment.Result
+	err    error
+}
+
+func (f *fakeExperimentalApplier) apply(_ context.Context, _ *seedexperiment.Bundle) (seedexperiment.Result, error) {
+	f.calls++
+	return f.result, f.err
+}
+
+func runExperimentalCLI(t *testing.T, applier *fakeExperimentalApplier, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	env := environment{
+		fsys: seeddata.FS(), apply: (&fakeApplier{}).apply,
+		experimentalFS: seedexperiment.FS(), applyExperimental: applier.apply,
+	}
+	code := run(context.Background(), args, &stdout, &stderr, env)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -59,7 +82,7 @@ func TestValidateOnlyPrintsCountsWithoutTouchingTheDatabase(t *testing.T) {
 
 func TestValidateOnlyWithoutDatasetChecksEveryEmbeddedDataset(t *testing.T) {
 	code, out, errOut := runCLI(t, seeddata.FS(), &fakeApplier{}, "--validate-only")
-	if code != 0 || !strings.Contains(out, `"synthetic-v1"`) {
+	if code != 0 || !strings.Contains(out, `"synthetic-v1"`) || strings.Contains(out, seedexperiment.DatasetID) {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 }
@@ -107,5 +130,53 @@ func TestInvalidOrUnknownDatasetNeverReachesApply(t *testing.T) {
 	code, _, errOut := runCLI(t, fsys, applier, "--apply", "--dataset", "synthetic-v1")
 	if code != 1 || applier.calls != 0 || !strings.Contains(errOut, "content_hash") {
 		t.Fatalf("tampered dataset: exit %d calls %d stderr %q", code, applier.calls, errOut)
+	}
+}
+
+func TestExperimentalDirectionsValidateOnlyIsExplicitAndDatabaseFree(t *testing.T) {
+	applier := &fakeExperimentalApplier{}
+	code, out, errOut := runExperimentalCLI(t, applier,
+		"--experimental-directions", "--validate-only", "--dataset", seedexperiment.DatasetID)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+	var result struct {
+		DatasetID string `json:"dataset_id"`
+		Mode      string `json:"mode"`
+		Status    string `json:"status"`
+		Rows      int    `json:"rows"`
+		Inferred  int    `json:"inferred"`
+		Unknown   int    `json:"unknown"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &result); err != nil {
+		t.Fatalf("stdout %q is not JSON: %v", out, err)
+	}
+	if result.DatasetID != seedexperiment.DatasetID || result.Mode != "validate-only" || result.Status != "valid" ||
+		result.Rows != 2333 || result.Inferred != 2325 || result.Unknown != 8 || applier.calls != 0 {
+		t.Fatalf("result=%+v apply_calls=%d", result, applier.calls)
+	}
+}
+
+func TestExperimentalDirectionsApplyOnlyAfterOptInAndValidation(t *testing.T) {
+	applier := &fakeExperimentalApplier{result: seedexperiment.Result{Status: "inserted", Rows: 2333, Inferred: 2325, Unknown: 8}}
+	code, out, errOut := runExperimentalCLI(t, applier,
+		"--experimental-directions", "--apply", "--dataset", seedexperiment.DatasetID)
+	if code != 0 || applier.calls != 1 || !strings.Contains(out, `"status":"inserted"`) || !strings.Contains(out, `"mode":"apply"`) {
+		t.Fatalf("exit %d calls %d stdout %q stderr %q", code, applier.calls, out, errOut)
+	}
+}
+
+func TestExperimentalDirectionsRejectsMissingOrUnknownDataset(t *testing.T) {
+	for _, args := range [][]string{
+		{"--experimental-directions", "--validate-only"},
+		{"--experimental-directions", "--validate-only", "--dataset", "missing"},
+		{"--validate-only", "--dataset", seedexperiment.DatasetID},
+		{"--experimental-directions", "--validate-only", "--dataset", seedexperiment.DatasetID, "extra"},
+	} {
+		applier := &fakeExperimentalApplier{}
+		code, _, _ := runExperimentalCLI(t, applier, args...)
+		if code == 0 || applier.calls != 0 {
+			t.Errorf("args %v: exit %d calls %d, want rejection without apply", args, code, applier.calls)
+		}
 	}
 }

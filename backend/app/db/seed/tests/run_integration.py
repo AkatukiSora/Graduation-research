@@ -26,6 +26,8 @@ MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 SEED_CLI_DATASET = "synthetic-v1"
 SEED_CLI_V2_DATASET = "synthetic-v2"
 SEED_CLI_RULE_TEST_DATASET = "nagoya-rule-test-202602-v1"
+SEED_CLI_EXPERIMENTAL_DATASET = "external-stop-approach-test-202602-v1"
+SEED_CLI_EXPERIMENTAL_SHA256 = "02eeb6998b5e926844448b4260d29c95f5b9a8a1b4216397789cbf1973493ebe"
 
 
 def load_cluster_class():
@@ -84,10 +86,10 @@ def psql_scalar(cluster, statement, database="gr9_dev"):
     return result.stdout.strip()
 
 
-def seed_cli(binary, cluster, *args, database="gr9_dev"):
+def seed_cli(binary, cluster, *args, database="gr9_dev", port=None):
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "DB_HOST": "127.0.0.1", "DB_PORT": str(cluster.port), "DB_NAME": database,
+        "DB_HOST": "127.0.0.1", "DB_PORT": str(port if port is not None else cluster.port), "DB_NAME": database,
         "DB_USER": "validator", "DB_PASSWORD": "disposable-cluster-uses-trust-auth",
         "DB_IAM_AUTH": "false", "DB_SSL_MODE": "disable",
     }
@@ -156,6 +158,93 @@ def main():
                                 " WHERE dataset_id='synthetic-v1'")
         assert counts == "1,12,58", counts
         assert flags == "true,false", flags
+
+        # The new dataset is opt-in, never part of the default seed list, and
+        # validate-only succeeds even when the configured local DB port is closed.
+        experimental_validate = seed_cli(binary, db, "--experimental-directions", "--validate-only",
+                                         "--dataset", SEED_CLI_EXPERIMENTAL_DATASET, port=1)
+        assert experimental_validate.returncode == 0, experimental_validate.stdout + experimental_validate.stderr
+        validate_report = json.loads(experimental_validate.stdout.strip())
+        assert (validate_report["dataset_id"], validate_report["mode"], validate_report["status"],
+                validate_report["rows"], validate_report["inferred"], validate_report["unknown"],
+                validate_report["content_sha256"]) == (
+            SEED_CLI_EXPERIMENTAL_DATASET, "validate-only", "valid", 2333, 2325, 8, SEED_CLI_EXPERIMENTAL_SHA256,
+        ), validate_report
+        unknown_experimental = seed_cli(binary, db, "--experimental-directions", "--apply",
+                                        "--dataset", "missing-experimental-dataset", port=1)
+        unknown_output = unknown_experimental.stdout + unknown_experimental.stderr
+        assert unknown_experimental.returncode == 1 and "missing-experimental-dataset" in unknown_output, unknown_output
+        assert "connection refused" not in unknown_output.lower(), unknown_output
+
+        # Force the row insert to fail after metadata insert; the transaction must
+        # remove both parent and child rows before a later valid apply.
+        force_failure = db.sql("ALTER TABLE experimental_direction_estimates "
+                               "ADD CONSTRAINT test_force_experimental_insert_failure CHECK (false)")
+        assert force_failure.returncode == 0, force_failure.stderr
+        failed_apply = seed_cli(binary, db, "--experimental-directions", "--apply",
+                                "--dataset", SEED_CLI_EXPERIMENTAL_DATASET)
+        assert failed_apply.returncode == 1, failed_apply.stdout + failed_apply.stderr
+        rollback_counts = psql_scalar(db, "SELECT (SELECT count(*) FROM experimental_direction_datasets WHERE dataset_id='"
+                                          + SEED_CLI_EXPERIMENTAL_DATASET + "')||','||"
+                                          "(SELECT count(*) FROM experimental_direction_estimates WHERE dataset_id='"
+                                          + SEED_CLI_EXPERIMENTAL_DATASET + "')")
+        assert rollback_counts == "0,0", rollback_counts
+        removed_failure = db.sql("ALTER TABLE experimental_direction_estimates "
+                                 "DROP CONSTRAINT test_force_experimental_insert_failure")
+        assert removed_failure.returncode == 0, removed_failure.stderr
+
+        regulation_before = psql_scalar(db, "SELECT (SELECT count(*) FROM regulation_datasets)||','||"
+                                            "(SELECT count(*) FROM regulation_points)||','||"
+                                            "(SELECT count(*) FROM regulation_candidates)")
+        experimental_first = seed_cli(binary, db, "--experimental-directions", "--apply",
+                                      "--dataset", SEED_CLI_EXPERIMENTAL_DATASET)
+        assert experimental_first.returncode == 0 and '"status":"inserted"' in experimental_first.stdout, \
+            experimental_first.stdout + experimental_first.stderr
+        experimental_report = json.loads(experimental_first.stdout.strip())
+        assert (experimental_report["rows"], experimental_report["inferred"], experimental_report["unknown"],
+                experimental_report["content_sha256"]) == (2333, 2325, 8, SEED_CLI_EXPERIMENTAL_SHA256), experimental_report
+        experimental_replay = seed_cli(binary, db, "--experimental-directions", "--apply",
+                                       "--dataset", SEED_CLI_EXPERIMENTAL_DATASET)
+        assert experimental_replay.returncode == 0 and '"status":"unchanged"' in experimental_replay.stdout, \
+            experimental_replay.stdout + experimental_replay.stderr
+        experimental_metadata = psql_scalar(db, "SELECT row_count||','||data_purpose||','||production_approved::text "
+                                                  "FROM experimental_direction_datasets WHERE dataset_id='"
+                                                  + SEED_CLI_EXPERIMENTAL_DATASET + "'")
+        experimental_counts = psql_scalar(db, "SELECT count(*)||','||count(*) FILTER (WHERE subset='teacher')||','||"
+                                                "count(*) FILTER (WHERE subset='target')||','||"
+                                                "count(*) FILTER (WHERE direction_status='inferred')||','||"
+                                                "count(*) FILTER (WHERE direction_status='unknown')||','||"
+                                                "count(*) FILTER (WHERE confidence IS NULL)||','||"
+                                                "count(*) FILTER (WHERE source='external_local_stop_approach') "
+                                                "FROM experimental_direction_estimates WHERE dataset_id='"
+                                                + SEED_CLI_EXPERIMENTAL_DATASET + "'")
+        assert experimental_metadata == "2333,direction_test,false", experimental_metadata
+        assert experimental_counts == "2333,394,1939,2325,8,2333,2333", experimental_counts
+        digest_mutated = db.sql("UPDATE experimental_direction_datasets SET content_sha256='"
+                                + "a" * 64 + "' WHERE dataset_id='" + SEED_CLI_EXPERIMENTAL_DATASET + "'")
+        assert digest_mutated.returncode == 0, digest_mutated.stderr
+        digest_conflict = seed_cli(binary, db, "--experimental-directions", "--apply",
+                                   "--dataset", SEED_CLI_EXPERIMENTAL_DATASET)
+        assert digest_conflict.returncode == 1 and "different content digest" in \
+            (digest_conflict.stdout + digest_conflict.stderr), digest_conflict.stdout + digest_conflict.stderr
+        digest_restored = db.sql("UPDATE experimental_direction_datasets SET content_sha256='"
+                                 + SEED_CLI_EXPERIMENTAL_SHA256 + "' WHERE dataset_id='"
+                                 + SEED_CLI_EXPERIMENTAL_DATASET + "'")
+        assert digest_restored.returncode == 0, digest_restored.stderr
+        regulation_after = psql_scalar(db, "SELECT (SELECT count(*) FROM regulation_datasets)||','||"
+                                           "(SELECT count(*) FROM regulation_points)||','||"
+                                           "(SELECT count(*) FROM regulation_candidates)")
+        assert regulation_after == regulation_before == "1,12,58", (regulation_before, regulation_after)
+        summary["experimental_seed"] = {
+            "validate_only": validate_report,
+            "rollback_counts_after_forced_insert_failure": rollback_counts,
+            "first_apply": experimental_report,
+            "replay": json.loads(experimental_replay.stdout.strip()),
+            "metadata": experimental_metadata,
+            "readback_counts": experimental_counts,
+            "digest_conflict_rejected": True,
+            "legacy_regulation_counts_before_after": [regulation_before, regulation_after],
+        }
 
         # Exercise the same streaming binary path with the compressed v2 fixture.
         v2_first = seed_cli(binary, db, "--apply", "--dataset", SEED_CLI_V2_DATASET)
