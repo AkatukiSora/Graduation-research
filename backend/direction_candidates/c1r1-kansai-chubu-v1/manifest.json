@@ -1,0 +1,31 @@
+{
+  "dataset_id": "c1r1-kansai-chubu-v1",
+  "purpose": "review_only",
+  "production_approved": false,
+  "confidence_calibrated": false,
+  "direction_convention": "clockwise_from_north_vehicle_travel_toward_junction",
+  "source_month": "202602",
+  "campaign_date_utc": "2026-10-24",
+  "files": {
+    "teacher-directions.jsonl": {
+      "rows": 394,
+      "inferred": 346,
+      "sha256": "3ecd92c3c10349cfc750d7523732132b466636e2ca6b8b34dd4665229d78681b",
+      "source_csv_sha256": "2a69fbe3a130da8fb3a48a91e38e8c9a2bd13561dfeec9c258a3f30284a222c1",
+      "osm_snapshot": "kansai-261020.osm.pbf"
+    },
+    "target-directions.jsonl": {
+      "rows": 1939,
+      "inferred": 1859,
+      "sha256": "7829d7733625edd3e9f6b7fafc578529697443db286ae9a6aada275ffaacd320",
+      "source_csv_sha256": "0d902b472980d40fa7b472998e3424c73ad4730108fac9655ac1b23e82ee573d",
+      "osm_snapshot": "chubu-261013.osm.pbf"
+    }
+  },
+  "teacher_evaluation": {
+    "within_20_degrees": 258,
+    "evaluated_inferred_rows": 346,
+    "total_rows": 394,
+    "target_accuracy_measured": false
+  }
+}
