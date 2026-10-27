@@ -120,32 +120,32 @@ export NOTICE_CONFIG=/path/to/protected-input/notice-config.json
 export SCRATCH_DIR=/path/to/private-scratch/nagoya-rule-test
 mkdir -p "$SCRATCH_DIR"
 
-uv run --locked python -m generation_io prepare-input \\
-  --data-dir "$SOURCE_DIR" --source source.csv --boundary nagoya-b1.geojson \\
-  --source-month 202602 --region-id jp:aichi:nkc-2km \\
-  --manifest-out "$SOURCE_DIR/input-manifest.json" \\
-  --dataset 'typeD_aichi(1).zip' --publisher '公益財団法人日本道路交通情報センター' \\
-  --edition '2026年02月分' --retrieved-at '取得日時不明' \\
-  --terms-reference '取得時の規約不明（現行参照はnotice configに記録）' \\
+uv run --locked python -m generation_io prepare-input \
+  --data-dir "$SOURCE_DIR" --source source.csv --boundary nagoya-b1.geojson \
+  --source-month 202602 --region-id jp:aichi:nkc-2km \
+  --manifest-out "$SOURCE_DIR/input-manifest.json" \
+  --dataset 'typeD_aichi(1).zip' --publisher '公益財団法人日本道路交通情報センター' \
+  --edition '2026年02月分' --retrieved-at '取得日時不明' \
+  --terms-reference '取得時の規約不明（現行参照はnotice configに記録）' \
   --rights-status owner-accepted-jartic-rule-test
 
 for run in 1 2; do
-  uv run --locked python -m generation_io generate \\
-    --data-dir "$SOURCE_DIR" --region-id jp:aichi:nkc-2km \\
+  uv run --locked python -m generation_io generate \
+    --data-dir "$SOURCE_DIR" --region-id jp:aichi:nkc-2km \
     --output-dir "$SCRATCH_DIR/generation-$run"
-  uv run --locked python -m generation_io verify \\
+  uv run --locked python -m generation_io verify \
     --manifest "$SCRATCH_DIR/generation-$run/generation-manifest.json"
-  uv run --locked python -m generation_io.rule_test_seed build \\
-    --generation-manifest "$SCRATCH_DIR/generation-$run/generation-manifest.json" \\
-    --source-zip "$SOURCE_ZIP" --dataset-id nagoya-rule-test-202602-v1 \\
-    --notice-config "$NOTICE_CONFIG" \\
+  uv run --locked python -m generation_io.rule_test_seed build \
+    --generation-manifest "$SCRATCH_DIR/generation-$run/generation-manifest.json" \
+    --source-zip "$SOURCE_ZIP" --dataset-id nagoya-rule-test-202602-v1 \
+    --notice-config "$NOTICE_CONFIG" \
     --output-dir "$SCRATCH_DIR/bundle-$run/nagoya-rule-test-202602-v1"
-  uv run --locked python -m generation_io.rule_test_seed verify \\
+  uv run --locked python -m generation_io.rule_test_seed verify \
     --bundle "$SCRATCH_DIR/bundle-$run/nagoya-rule-test-202602-v1"
 done
-diff -r \\
+diff -r \
   "$SCRATCH_DIR/generation-1" "$SCRATCH_DIR/generation-2"
-diff -r \\
+diff -r \
   "$SCRATCH_DIR/bundle-1" "$SCRATCH_DIR/bundle-2"
 ```
 
@@ -201,5 +201,42 @@ git diff --check
 - `go test ./...` と `go vet ./...` は Go 全パッケージを対象にします。ローカル PostGIS runner は v1/v2/rule-test の seed 初回投入・再実行、migrate 経路、API repository read-back を検証します。
 - v2 の10,000ポイント／60,000候補 fixture は streaming load と全 object 配列を保持しないことを確認するテスト対象です。過去の Linux 検証では process high-water RSS は45,104 KiB（512 MiB 未満）でした。
 - 未検証の運用環境：コンテナイメージ（`/api`、`/migrate`）の実ビルド、AWS／RDS（IAM 認証）上での投入と実際の token 発行、ECS タスクでの実行（`SEED_DATASET_IDS` を渡すインフラ設定は別途必要）、Lambda 上での `cmd/api` 起動、GitHub Actions での実行。
-- `run_integration.py` の `--toolchain-report` は PostgreSQL 17 と PostGIS を展開したディレクトリ（`postgres/root`）と同じ場所に置くツールチェーン記録 JSON です。リポジトリだけでは再現できず、同等の使い捨て環境を用意する必要があります。
+- `run_integration.py` の `--toolchain-report` は PostgreSQL 17 と PostGIS を展開したディレクトリ（`postgres/root`）と同じ場所に置くツールチェーン記録 JSON です。リポジトリだけでは再現できず、同等の使い捨て環境を用意する必要があります。Linux では Unix socket path に107 byteの上限があるため、`--scratch-dir` は短い private cache path を指定してください。
 - `build_dataset.py --check` が全体でバイト一致するのは `uv.lock` で固定した環境で実行した場合です。マニフェストには実行時のライブラリ版が記録されるため、別の環境では `dataset.json` の digest だけが一致します。
+
+## external stop-approach direction test seed
+
+`external-stop-approach-test-202602-v1` は、既存の `regulation_datasets` / `regulation_points` にだけ登録する実験専用データです。実座標を含むため `synthetic=false`、ただし migration の CHECK と seed の双方で `production_approved=false` に固定されます。ポイントは teacher 394件・target 1,939件の計2,333件で、方向は inferred 2,325件・unknown 8件、confirmed 0件です。inferred は実道路・車両の接近方向の正しさを保証せず、confidence は全件未提供（JSON null）です。unknown 8件は `topology_only_unverified` のまま保持します。validity は全件 unknown、候補行は0件です。
+
+通常の `cmd/seed` / `migrate` への自動登録はありません。API selector の既定値も変わりません。この dataset ID を明示 selector に設定しても、range/detail SQL がこの ID だけを除外するため、APIには地点を返しません。既存の `synthetic-v1` / `synthetic-v2` / `nagoya-rule-test-202602-v1` の挙動は変更しません。
+
+### 使い捨てローカルDBへの適用とread-back
+
+本番・共有DBには実行しないでください。必ずローカルの破棄可能な PostgreSQL/PostGIS DB を用意し、DB URL がそのローカル socket を指すことを確認してから、`backend/app` で次を実行します。
+
+```sh
+ATLAS_BINARY_PATH=/path/to/pinned/atlas
+LOCAL_TEST_DATABASE_URL='postgresql://validator@/gr9_dev?host=/path/to/private/socket&port=5432'
+"$ATLAS_BINARY_PATH" migrate apply --url "$LOCAL_TEST_DATABASE_URL" --dir file://db/migrations
+psql "$LOCAL_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/seed/external-stop-approach-test-202602-v1/seed.sql
+psql "$LOCAL_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT d.dataset_id, d.source_month, d.region_id, d.synthetic, d.production_approved, d.content_sha256, count(p.entity_id) AS points, count(p.entity_id) FILTER (WHERE p.direction_status='inferred') AS inferred, count(p.entity_id) FILTER (WHERE p.direction_status='unknown') AS unknown, (SELECT count(*) FROM regulation_candidates c WHERE c.dataset_id=d.dataset_id) AS candidates FROM regulation_datasets d LEFT JOIN regulation_points p USING (dataset_id) WHERE d.dataset_id='external-stop-approach-test-202602-v1' GROUP BY d.dataset_id"
+```
+
+最初の適用は dataset 1件・points 2,333件・inferred 2,325件・unknown 8件・candidates 0件を表示し、同じ SQL の再実行は全行の read-back 照合後に no-op になります。同じ ID の別 digest、他 ID が既に使う digest、既存行の改変は上書きせず失敗します。途中の INSERT エラーは dataset と points を含めて全 rollback します。seed はmigration済みの既存テーブルを必要とし、テーブル作成・UPDATE・DELETEは行いません。immutable dataset の撤去はこの seed の rollback ではなく、明示的な別承認が必要です。
+
+### 生成物の再確認
+
+元のJSONL、manifest、CSV、PBF、外部実装のソース／archiveはリポジトリに含めません。以下の入力環境変数は、保護された入力ファイルを指すよう利用者側で設定してください。builder は SHA-256 と件数・状態を検証し、`seed.sql` を決定的に生成します。`--check` は生成済み SQL とバイト単位で比較し、独立 validator は全2,333行・各evidence・provenance込み canonical digest を入力と照合します。
+
+```sh
+python3 -B db/seed/external-stop-approach-test-202602-v1/build_seed.py \
+  --input-jsonl "$EXTERNAL_INPUT_JSONL" --manifest "$EXTERNAL_MANIFEST" \
+  --output db/seed/external-stop-approach-test-202602-v1/seed.sql --check
+python3 -B db/seed/external-stop-approach-test-202602-v1/tests/verify_generated_seed.py \
+  --input-jsonl "$EXTERNAL_INPUT_JSONL" --manifest "$EXTERNAL_MANIFEST" \
+  --sql db/seed/external-stop-approach-test-202602-v1/seed.sql
+```
+
+### 出典・利用条件
+
+provenance には JARTIC 由来CSVと OSM PBF の subset 別 SHA-256、JARTIC/OSM帰属表示、外部実装sourceの SHA-256 を記録しています。OSM attribution は © OpenStreetMap contributors、データ利用条件は ODbL 1.0 です。外部実装の再配布可否・license は未確認のため、原実装とarchiveは含めず、生成データもチーム内の未承認テスト専用です。provenanceに内部ログや作業環境の絶対パスは含めません。

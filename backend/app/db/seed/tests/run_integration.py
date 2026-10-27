@@ -26,6 +26,8 @@ MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 SEED_CLI_DATASET = "synthetic-v1"
 SEED_CLI_V2_DATASET = "synthetic-v2"
 SEED_CLI_RULE_TEST_DATASET = "nagoya-rule-test-202602-v1"
+EXTERNAL_SQL_DATASET = "external-stop-approach-test-202602-v1"
+EXTERNAL_SQL = APP_DIR / "db" / "seed" / EXTERNAL_SQL_DATASET / "seed.sql"
 
 
 def load_cluster_class():
@@ -84,6 +86,51 @@ def psql_scalar(cluster, statement, database="gr9_dev"):
     return result.stdout.strip()
 
 
+def external_sql_documents():
+    text = EXTERNAL_SQL.read_text()
+    points_marker = "$external_seed_points$"
+    dataset_marker = "$external_seed_dataset_check$"
+    points_start = text.index(points_marker) + len(points_marker)
+    points_end = text.index(points_marker, points_start)
+    dataset_start = text.index(dataset_marker) + len(dataset_marker)
+    dataset_end = text.index(dataset_marker, dataset_start)
+    return json.loads(text[points_start:points_end]), json.loads(text[dataset_start:dataset_end])
+
+
+def external_psql_environment(env):
+    return {key: env[key] for key in ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE")}
+
+
+def run_external_seed_sql(cluster, database):
+    env = dict(cluster.env)
+    env.update({
+        "PGHOST": str(cluster.sock),
+        "PGPORT": str(cluster.port),
+        "PGUSER": "validator",
+        "PGDATABASE": database,
+    })
+    command = [str(cluster.bin / "psql"), "-v", "ON_ERROR_STOP=1", "-f", str(EXTERNAL_SQL)]
+    result = subprocess.run(command, env=env, cwd=APP_DIR, capture_output=True, text=True, timeout=180)
+    return command, env, result
+
+
+def external_point_snapshot(cluster):
+    return psql_scalar(cluster, "SELECT jsonb_agg(jsonb_build_object("
+        "'dataset_id', dataset_id, 'entity_id', entity_id, 'raw_uid', raw_uid,"
+        "'longitude', ST_X(geom::geometry), 'latitude', ST_Y(geom::geometry),"
+        "'direction_degrees', direction_degrees, 'direction_status', direction_status,"
+        "'validity_status', validity_status, 'normalization_status', normalization_status,"
+        "'created_at', created_at, 'updated_at', updated_at,"
+        "'imputation_method', imputation_method, 'imputation_reason', imputation_reason,"
+        "'direction_source', direction_source, 'direction_evidence', direction_evidence,"
+        "'validity_reason', validity_reason, 'validity_evidence', validity_evidence)"
+        " ORDER BY entity_id)::text FROM regulation_points WHERE dataset_id='" + EXTERNAL_SQL_DATASET + "'")
+
+
+def sql_literal(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
 def seed_cli(binary, cluster, *args, database="gr9_dev"):
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -121,7 +168,8 @@ def main():
     scratch = tempfile.mkdtemp(prefix="seed-cli-", dir=db.tmp.parent)
     try:
         db.start()
-        for setup in ("CREATE ROLE rds_iam NOLOGIN", "CREATE DATABASE gr9_dev"):
+        for setup in ("CREATE ROLE rds_iam NOLOGIN", "CREATE DATABASE gr9_dev", "CREATE DATABASE gr9_upgrade",
+                      "CREATE DATABASE gr9_external_no_schema"):
             created = db.sql(setup, database="postgres")
             assert created.returncode == 0, created.stderr
         for migration in MIGRATIONS:
@@ -203,7 +251,130 @@ def main():
         assert rule_flags == "true,false", rule_flags
         assert rule_states == expected_rule_states, rule_states
 
-        # The API repository reads the dataset the CLI just applied.
+        # The external artifact is applied only by the explicit SQL file through
+        # psql over this disposable cluster's private Unix socket.
+        external_rows, external_dataset = external_sql_documents()
+        assert len(external_rows) == 2333 and external_dataset["dataset_id"] == EXTERNAL_SQL_DATASET
+        no_schema_command, no_schema_env, no_schema_result = run_external_seed_sql(db, "gr9_external_no_schema")
+        no_schema_output = no_schema_result.stdout + no_schema_result.stderr
+        assert no_schema_result.returncode != 0 and "regulation_datasets" in no_schema_output, no_schema_output
+        no_schema_tables = psql_scalar(db, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'",
+                                       database="gr9_external_no_schema")
+        assert no_schema_tables == "0", f"seed created persistent tables without migrations: {no_schema_tables}"
+
+        digest = external_dataset["content_sha256"]
+        conflict = db.sql(
+            "INSERT INTO regulation_datasets (dataset_id, content_sha256, source_month, region_id, synthetic, production_approved) "
+            f"VALUES ('external-digest-conflict', '{digest}', '202602', 'test:conflict', false, false)"
+        )
+        assert conflict.returncode == 0, conflict.stderr
+        conflict_command, conflict_env, conflict_result = run_external_seed_sql(db, "gr9_dev")
+        conflict_output = conflict_result.stdout + conflict_result.stderr
+        assert conflict_result.returncode != 0 and "digest already belongs to another dataset ID" in conflict_output, conflict_output
+        assert psql_scalar(db, f"SELECT count(*) FROM regulation_datasets WHERE dataset_id='{EXTERNAL_SQL_DATASET}'") == "0"
+        removed = db.sql("DELETE FROM regulation_datasets WHERE dataset_id='external-digest-conflict'")
+        assert removed.returncode == 0, removed.stderr
+
+        fail_entity = max(point["entity_id"] for point in external_rows)
+        function = db.sql(
+            "CREATE FUNCTION external_seed_test_fail_late() RETURNS trigger LANGUAGE plpgsql AS $test$ "
+            f"BEGIN IF NEW.entity_id = {sql_literal(fail_entity)} THEN "
+            "RAISE EXCEPTION 'intentional disposable mid-seed failure'; END IF; RETURN NEW; END $test$"
+        )
+        assert function.returncode == 0, function.stderr
+        trigger = db.sql("CREATE TRIGGER external_seed_test_fail_late BEFORE INSERT ON regulation_points "
+                         "FOR EACH ROW EXECUTE FUNCTION external_seed_test_fail_late()")
+        assert trigger.returncode == 0, trigger.stderr
+        rollback_command, rollback_env, rollback_result = run_external_seed_sql(db, "gr9_dev")
+        rollback_output = rollback_result.stdout + rollback_result.stderr
+        assert rollback_result.returncode != 0 and "intentional disposable mid-seed failure" in rollback_output, rollback_output
+        assert psql_scalar(db, f"SELECT count(*) FROM regulation_datasets WHERE dataset_id='{EXTERNAL_SQL_DATASET}'") == "0"
+        assert psql_scalar(db, f"SELECT count(*) FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}'") == "0"
+        assert db.sql("DROP TRIGGER external_seed_test_fail_late ON regulation_points").returncode == 0
+        assert db.sql("DROP FUNCTION external_seed_test_fail_late()").returncode == 0
+
+        seed_sql_command, seed_sql_env, external_first = run_external_seed_sql(db, "gr9_dev")
+        assert external_first.returncode == 0, external_first.stdout + external_first.stderr
+        external_counts = psql_scalar(db, f"SELECT (SELECT count(*) FROM regulation_datasets WHERE dataset_id='{EXTERNAL_SQL_DATASET}')||','||"
+                                          f"(SELECT count(*) FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}')||','||"
+                                          f"(SELECT count(*) FROM regulation_candidates WHERE dataset_id='{EXTERNAL_SQL_DATASET}')")
+        assert external_counts == "1,2333,0", external_counts
+        external_states = psql_scalar(db, f"SELECT count(*) FILTER (WHERE direction_status='inferred')||','||"
+                                          f"count(*) FILTER (WHERE direction_status='unknown')||','||"
+                                          f"count(*) FILTER (WHERE direction_status='confirmed')||','||"
+                                          f"count(*) FILTER (WHERE validity_status='unknown')||','||"
+                                          f"count(*) FILTER (WHERE direction_evidence ? 'confidence' AND "
+                                          f"jsonb_typeof(direction_evidence->'confidence')='null') "
+                                          f"FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}'")
+        assert external_states == "2325,8,0,2333,2325", external_states
+        external_metadata = psql_scalar(db, f"SELECT source_month||','||region_id||','||synthetic::text||','||production_approved::text "
+                                            f"FROM regulation_datasets WHERE dataset_id='{EXTERNAL_SQL_DATASET}'")
+        assert external_metadata == "202602,jp:shiga-aichi:external-test,false,false", external_metadata
+        points_before_replay = external_point_snapshot(db)
+        external_replay_command, _, external_replay = run_external_seed_sql(db, "gr9_dev")
+        assert external_replay.returncode == 0, external_replay.stdout + external_replay.stderr
+        points_after_replay = external_point_snapshot(db)
+        assert points_before_replay == points_after_replay, "idempotent SQL replay changed stored points"
+
+        # Conflicting immutable state is rejected without being repaired in place.
+        mutated_digest = "f" * 64
+        assert mutated_digest != digest
+        changed = db.sql(f"UPDATE regulation_datasets SET content_sha256='{mutated_digest}' WHERE dataset_id='{EXTERNAL_SQL_DATASET}'")
+        assert changed.returncode == 0, changed.stderr
+        digest_conflict_command, _, digest_conflict = run_external_seed_sql(db, "gr9_dev")
+        digest_conflict_text = digest_conflict.stdout + digest_conflict.stderr
+        assert digest_conflict.returncode != 0 and "different digest" in digest_conflict_text, digest_conflict_text
+        assert psql_scalar(db, f"SELECT content_sha256 FROM regulation_datasets WHERE dataset_id='{EXTERNAL_SQL_DATASET}'") == mutated_digest
+        assert db.sql(f"UPDATE regulation_datasets SET content_sha256='{digest}' WHERE dataset_id='{EXTERNAL_SQL_DATASET}'").returncode == 0
+
+        damaged_entity = external_rows[0]["entity_id"]
+        damaged = db.sql(f"UPDATE regulation_points SET normalization_status='tampered' "
+                         f"WHERE dataset_id='{EXTERNAL_SQL_DATASET}' AND entity_id={sql_literal(damaged_entity)}")
+        assert damaged.returncode == 0, damaged.stderr
+        damaged_command, _, damaged_replay = run_external_seed_sql(db, "gr9_dev")
+        damaged_text = damaged_replay.stdout + damaged_replay.stderr
+        assert damaged_replay.returncode != 0 and "read-back differs" in damaged_text, damaged_text
+        assert psql_scalar(db, f"SELECT normalization_status FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}' "
+                               f"AND entity_id={sql_literal(damaged_entity)}") == "tampered"
+        assert db.sql(f"UPDATE regulation_points SET normalization_status='valid_candidate_only' "
+                      f"WHERE dataset_id='{EXTERNAL_SQL_DATASET}' AND entity_id={sql_literal(damaged_entity)}").returncode == 0
+        restored_command, _, restored = run_external_seed_sql(db, "gr9_dev")
+        assert restored.returncode == 0, restored.stdout + restored.stderr
+
+        summary.update(
+            external_seed_connection_url=f"postgresql://validator@/gr9_dev?host={db.sock}&port={db.port}",
+            external_seed_psql_environment=external_psql_environment(seed_sql_env),
+            external_seed_no_schema_command=no_schema_command,
+            external_seed_no_schema_psql_environment=external_psql_environment(no_schema_env),
+            external_seed_no_schema_returncode=no_schema_result.returncode,
+            external_seed_no_schema_public_tables=no_schema_tables,
+            external_seed_digest_conflict_command=conflict_command,
+            external_seed_digest_conflict_psql_environment=external_psql_environment(conflict_env),
+            external_seed_digest_conflict_returncode=conflict_result.returncode,
+            external_seed_digest_conflict_rejected=True,
+            external_seed_midway_failure_command=rollback_command,
+            external_seed_midway_failure_psql_environment=external_psql_environment(rollback_env),
+            external_seed_midway_failure_returncode=rollback_result.returncode,
+            external_seed_midway_failure_rolled_back=True,
+            external_seed_first_command=seed_sql_command,
+            external_seed_first_returncode=external_first.returncode,
+            external_seed_replay_command=external_replay_command,
+            external_seed_replay_returncode=external_replay.returncode,
+            external_seed_replay_readback_unchanged=True,
+            external_seed_digest_mismatch_command=digest_conflict_command,
+            external_seed_digest_mismatch_returncode=digest_conflict.returncode,
+            external_seed_corruption_command=damaged_command,
+            external_seed_corruption_returncode=damaged_replay.returncode,
+            external_seed_corruption_not_overwritten=True,
+            external_seed_restored_replay_command=restored_command,
+            external_seed_restored_replay_returncode=restored.returncode,
+            external_seed_counts=external_counts,
+            external_seed_states=external_states,
+            external_seed_metadata=external_metadata,
+            external_seed_content_sha256=digest,
+        )
+
+        # The API repository reads the dataset the CLI and explicit SQL just applied.
         repo_tests = run([go, "test", "./internal/repository/postgres/...", "-run", "Integration", "-count=1", "-v"],
                          dict(env, TEST_DATABASE_URL=url))
         if args.log:
@@ -333,7 +504,11 @@ def main():
             Path(scratch).rmdir()
         except OSError:
             pass
-    print(json.dumps(summary))
+    rendered_summary = json.dumps(summary, sort_keys=True)
+    if args.log:
+        with args.log.open("a") as log:
+            log.write("\nIntegration summary and exact external psql commands:\n" + rendered_summary + "\n")
+    print(rendered_summary)
     sys.exit(0 if summary["passed"] and summary["database_stopped"] else 1)
 
 

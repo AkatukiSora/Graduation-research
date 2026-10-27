@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS regulation_datasets (
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT regulation_datasets_digest_format CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT regulation_datasets_source_month_format CHECK (source_month ~ '^[0-9]{4}(0[1-9]|1[0-2])$'),
-    CONSTRAINT regulation_datasets_synthetic_not_approved CHECK (NOT (synthetic AND production_approved))
+    CONSTRAINT regulation_datasets_synthetic_not_approved CHECK (NOT (synthetic AND production_approved)),
+    CONSTRAINT regulation_datasets_external_direction_test_not_approved CHECK (
+        dataset_id <> 'external-stop-approach-test-202602-v1' OR production_approved IS FALSE
+    )
 );
 
 CREATE TABLE IF NOT EXISTS regulation_points (
@@ -168,6 +171,43 @@ CREATE TABLE IF NOT EXISTS regulation_points (
             AND direction_evidence->>'observation_sha256' ~ '^[0-9a-f]{64}$'
         )
         OR (
+            direction_status = 'inferred'
+            AND direction_degrees IS NOT NULL
+            AND direction_degrees > '-Infinity'::double precision
+            AND direction_degrees < 'Infinity'::double precision
+            AND direction_degrees >= 0
+            AND direction_degrees < 360
+            AND imputation_method = 'external_local_stop_approach'
+            AND direction_source = 'external_local_stop_approach'
+            AND imputation_reason = 'model_direction_inference'
+            AND dataset_id = 'external-stop-approach-test-202602-v1'
+            AND direction_evidence <> '{}'::jsonb
+            AND jsonb_typeof(direction_evidence) = 'object'
+            AND direction_evidence - ARRAY['schema_version', 'kind', 'source_csv_sha256', 'method_version', 'direction_semantics', 'artifact_sha256', 'record_ref', 'subset', 'confidence']::text[] = '{}'::jsonb
+            AND direction_evidence ?& ARRAY['schema_version', 'kind', 'source_csv_sha256', 'method_version', 'direction_semantics', 'artifact_sha256', 'record_ref', 'subset', 'confidence']
+            AND jsonb_typeof(direction_evidence->'schema_version') = 'number'
+            AND direction_evidence->'schema_version' = '1'::jsonb
+            AND jsonb_typeof(direction_evidence->'kind') = 'string'
+            AND direction_evidence->>'kind' = 'external_local_stop_approach'
+            AND jsonb_typeof(direction_evidence->'source_csv_sha256') = 'string'
+            AND direction_evidence->>'source_csv_sha256' ~ '^[0-9a-f]{64}$'
+            AND jsonb_typeof(direction_evidence->'method_version') = 'string'
+            AND direction_evidence->>'method_version' = 'local-stop-approach-offline-v1'
+            AND jsonb_typeof(direction_evidence->'direction_semantics') = 'string'
+            AND direction_evidence->>'direction_semantics' = 'vehicle_approach_to_stop_estimate'
+            AND jsonb_typeof(direction_evidence->'artifact_sha256') = 'string'
+            AND direction_evidence->>'artifact_sha256' = '02eeb6998b5e926844448b4260d29c95f5b9a8a1b4216397789cbf1973493ebe'
+            AND jsonb_typeof(direction_evidence->'record_ref') = 'string'
+            AND direction_evidence->>'record_ref' = entity_id
+            AND jsonb_typeof(direction_evidence->'subset') = 'string'
+            AND direction_evidence->>'subset' IN ('teacher', 'target')
+            AND (
+                (direction_evidence->>'subset' = 'teacher' AND direction_evidence->>'source_csv_sha256' = '2a69fbe3a130da8fb3a48a91e38e8c9a2bd13561dfeec9c258a3f30284a222c1')
+                OR (direction_evidence->>'subset' = 'target' AND direction_evidence->>'source_csv_sha256' = '0d902b472980d40fa7b472998e3424c73ad4730108fac9655ac1b23e82ee573d')
+            )
+            AND jsonb_typeof(direction_evidence->'confidence') = 'null'
+        )
+        OR (
             direction_status IN ('inferred', 'confirmed')
             AND direction_degrees IS NOT NULL
             AND imputation_method = 'none'
@@ -177,7 +217,7 @@ CREATE TABLE IF NOT EXISTS regulation_points (
         )
     ) IS TRUE),
     CONSTRAINT regulation_points_imputation_method_values CHECK (
-        imputation_method IN ('none', 'source_entrance_geometry', 'nearest_stop_reference', 'osm_fusion_cautious', 'field_observation')
+        imputation_method IN ('none', 'source_entrance_geometry', 'nearest_stop_reference', 'osm_fusion_cautious', 'field_observation', 'external_local_stop_approach')
     ),
     CONSTRAINT regulation_points_imputation_reason_values CHECK (
         imputation_reason IN (
@@ -189,7 +229,7 @@ CREATE TABLE IF NOT EXISTS regulation_points (
         )
     ),
     CONSTRAINT regulation_points_direction_source_values CHECK (
-        direction_source IN ('unknown', 'jartic_entrance', 'nearest_stop', 'osm_fusion', 'field_survey')
+        direction_source IN ('unknown', 'jartic_entrance', 'nearest_stop', 'osm_fusion', 'field_survey', 'external_local_stop_approach')
     ),
     CONSTRAINT regulation_points_direction_evidence_object CHECK (
         jsonb_typeof(direction_evidence) = 'object'
