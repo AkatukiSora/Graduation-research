@@ -20,7 +20,6 @@ SELECT
     p.direction_status
 FROM regulation_points AS p
 WHERE p.dataset_id = $1::text
-  AND p.dataset_id <> 'external-stop-approach-test-202602-v1'
   AND p.raw_uid = $2::text
 `
 
@@ -62,7 +61,6 @@ SELECT
     p.direction_status
 FROM regulation_points AS p
 WHERE p.dataset_id = $1::text
-  AND p.dataset_id <> 'external-stop-approach-test-202602-v1'
   AND ST_DWithin(
         p.geom,
         ST_SetSRID(ST_MakePoint($2::float8, $3::float8), 4326)::geography,

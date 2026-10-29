@@ -452,7 +452,7 @@ func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsInferredDirection(t *tes
 	t.Fatalf("range result did not preserve the inferred direction: %+v", rangePoints)
 }
 
-func TestIntegrationExternalDirectionTestDatasetIsNotServed(t *testing.T) {
+func TestIntegrationExternalDirectionTestDatasetIsServed(t *testing.T) {
 	pool := newTestPool(t)
 	const rawUID = "25101260032100000000000000000000"
 	var externalRows int
@@ -475,13 +475,13 @@ func TestIntegrationExternalDirectionTestDatasetIsNotServed(t *testing.T) {
 	}
 
 	repo := NewStopPointRepository(pool, externalTestDatasetID)
-	if _, found, err := repo.FindByID(context.Background(), rawUID); err != nil || found {
-		t.Fatalf("external test detail was served: found=%t err=%v", found, err)
+	if _, found, err := repo.FindByID(context.Background(), rawUID); err != nil || !found {
+		t.Fatalf("external test detail was not served: found=%t err=%v", found, err)
 	}
 	points, err := repo.FindByRange(context.Background(), domain.GetStopPointsByRangeInput{
 		Latitude: 35.040978092509, Longitude: 135.816451883731, RadiusMeters: 1000, Limit: 500,
 	})
-	if err != nil || len(points) != 0 {
+	if err != nil || len(points) == 0 {
 		t.Fatalf("external test range returned %d points, err=%v", len(points), err)
 	}
 }
