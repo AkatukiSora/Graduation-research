@@ -26,7 +26,7 @@ import (
 const (
 	syntheticDatasetID      = "synthetic-v1"
 	nagoyaRuleTestDatasetID = "nagoya-rule-test-202602-v1"
-	externalTestDatasetID   = "external-stop-approach-test-202602-v1"
+	externalTestDatasetID   = "external-stop-approach-test-202602-v2"
 )
 
 // checkLocalDSN accepts only connection strings whose every host is a local
@@ -454,19 +454,19 @@ func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsInferredDirection(t *tes
 
 func TestIntegrationExternalDirectionTestDatasetIsServed(t *testing.T) {
 	pool := newTestPool(t)
-	const rawUID = "25101260032100000000000000000000"
+	const rawUID = "23202602016380300000000015000209"
 	var externalRows int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM regulation_points WHERE dataset_id=$1`,
 		externalTestDatasetID).Scan(&externalRows); err != nil {
 		t.Fatal(err)
 	}
-	if externalRows != 2333 {
-		t.Fatalf("external test fixture has %d rows, want 2333; run the explicit SQL integration harness", externalRows)
+	if externalRows != 168652 {
+		t.Fatalf("external test fixture has %d rows, want 168652; run the explicit SQL integration harness", externalRows)
 	}
 	var externalNearbyRows int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM regulation_points
 		WHERE dataset_id=$1 AND raw_uid=$2 AND ST_DWithin(
-			geom, ST_SetSRID(ST_MakePoint(135.816451883731, 35.040978092509), 4326)::geography, 1000)`,
+			geom, ST_SetSRID(ST_MakePoint(136.9331, 35.04593), 4326)::geography, 1000)`,
 		externalTestDatasetID, rawUID).Scan(&externalNearbyRows); err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestIntegrationExternalDirectionTestDatasetIsServed(t *testing.T) {
 		t.Fatalf("external test detail was not served: found=%t err=%v", found, err)
 	}
 	points, err := repo.FindByRange(context.Background(), domain.GetStopPointsByRangeInput{
-		Latitude: 35.040978092509, Longitude: 135.816451883731, RadiusMeters: 1000, Limit: 500,
+		Latitude: 35.04593, Longitude: 136.9331, RadiusMeters: 1000, Limit: 500,
 	})
 	if err != nil || len(points) == 0 {
 		t.Fatalf("external test range returned %d points, err=%v", len(points), err)

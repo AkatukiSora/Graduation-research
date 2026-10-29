@@ -1,5 +1,6 @@
-h1:l3Y0cM5pBEwN/MscW0IZGhDKvx2ki26r/Sw7mQfRT38=
+h1:shymLeVxJ+4uU3fYYEph1qDgE3UHwmGLXxmaGXNDHQI=
 202606160001_init_stop_signs.sql h1:mupSPLGsnTU1XjKURcDXpRWuGSEIuvuYtWK6SkalYqQ=
 202610130001_regulation_datasets.sql h1:IArTArpao5p5EuUjTb2Wu/2ytunFdy9/vrkPPGDIDbw=
 202610140001_regulation_point_evidence.sql h1:rR1jbFeNyMv7q0JPH+sjj9x04ua5Mqn1UV5Ybb1Aq60=
 202610260001_external_stop_approach.sql h1:Yct1We0nnY9P8qA/g7fmyl4GLNvtrB0w+28WxnFxZMA=
+202610290001_simplify_regulation_point_checks.sql h1:rJMTCHwOyaVyYSbzhRzSeDRl60cE2U+RpM6XGSzgqXA=

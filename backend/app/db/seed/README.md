@@ -206,37 +206,42 @@ git diff --check
 
 ## external stop-approach direction test seed
 
-`external-stop-approach-test-202602-v1` は、既存の `regulation_datasets` / `regulation_points` にだけ登録する実験専用データです。実座標を含むため `synthetic=false`、ただし migration の CHECK と seed の双方で `production_approved=false` に固定されます。ポイントは teacher 394件・target 1,939件の計2,333件で、方向は inferred 2,325件・unknown 8件、confirmed 0件です。inferred は実道路・車両の接近方向の正しさを保証せず、confidence は全件未提供（JSON null）です。unknown 8件は `topology_only_unverified` のまま保持します。validity は全件 unknown、候補行は0件です。
+`external-stop-approach-test-202602-v2` は、方位推定結果 `result_local.json`(168,652地点)を `regulation_datasets` / `regulation_points` に入れる実験用データです。地点ごとの `uniqueKey` が `entity_id` と `raw_uid`、`lat`/`lon` が位置、`az` が `direction_degrees` になります。`az` があれば `direction_status = inferred`、なければ `unknown`(166,580件 / 2,072件)です。それ以外の列は既定値のままで、元データの `error` は取り込みません。`synthetic = false`、`production_approved = false` です。
 
-通常の `cmd/seed` / `migrate` への自動登録はありません。API selector の既定値も変わりません。この dataset ID を明示 selector に設定した場合、range/detail API は他の dataset と同じく地点を返します（`production_approved` による API 側の除外はありません）。既存の `synthetic-v1` / `synthetic-v2` / `nagoya-rule-test-202602-v1` の挙動は変更しません。
+`migrate` や `cmd/seed` からは投入されません。API で配信するには `STOP_POINT_DATASET_ID=external-stop-approach-test-202602-v2` を設定します。
 
-### 使い捨てローカルDBへの適用とread-back
+### 投入
 
-本番・共有DBには実行しないでください。必ずローカルの破棄可能な PostgreSQL/PostGIS DB を用意し、DB URL がそのローカル socket を指すことを確認してから、`backend/app` で次を実行します。
-
-```sh
-ATLAS_BINARY_PATH=/path/to/pinned/atlas
-LOCAL_TEST_DATABASE_URL='postgresql://validator@/gr9_dev?host=/path/to/private/socket&port=5432'
-"$ATLAS_BINARY_PATH" migrate apply --url "$LOCAL_TEST_DATABASE_URL" --dir file://db/migrations
-psql "$LOCAL_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f db/seed/external-stop-approach-test-202602-v1/seed.sql
-psql "$LOCAL_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT d.dataset_id, d.source_month, d.region_id, d.synthetic, d.production_approved, d.content_sha256, count(p.entity_id) AS points, count(p.entity_id) FILTER (WHERE p.direction_status='inferred') AS inferred, count(p.entity_id) FILTER (WHERE p.direction_status='unknown') AS unknown, (SELECT count(*) FROM regulation_candidates c WHERE c.dataset_id=d.dataset_id) AS candidates FROM regulation_datasets d LEFT JOIN regulation_points p USING (dataset_id) WHERE d.dataset_id='external-stop-approach-test-202602-v1' GROUP BY d.dataset_id"
-```
-
-最初の適用は dataset 1件・points 2,333件・inferred 2,325件・unknown 8件・candidates 0件を表示し、同じ SQL の再実行は全行の read-back 照合後に no-op になります。同じ ID の別 digest、他 ID が既に使う digest、既存行の改変は上書きせず失敗します。途中の INSERT エラーは dataset と points を含めて全 rollback します。seed はmigration済みの既存テーブルを必要とし、テーブル作成・UPDATE・DELETEは行いません。immutable dataset の撤去はこの seed の rollback ではなく、明示的な別承認が必要です。
-
-### 生成物の再確認
-
-元のJSONL、manifest、CSV、PBF、外部実装のソース／archiveはリポジトリに含めません。以下の入力環境変数は、保護された入力ファイルを指すよう利用者側で設定してください。builder は SHA-256 と件数・状態を検証し、`seed.sql` を決定的に生成します。`--check` は生成済み SQL とバイト単位で比較し、独立 validator は全2,333行・各evidence・provenance込み canonical digest を入力と照合します。
+migration を適用した PostgreSQL/PostGIS に対し、このディレクトリで psql を実行します。`points.csv.gz` は `gzip` で展開されるため、`gzip` が使える環境で実行してください。
 
 ```sh
-python3 -B db/seed/external-stop-approach-test-202602-v1/build_seed.py \
-  --input-jsonl "$EXTERNAL_INPUT_JSONL" --manifest "$EXTERNAL_MANIFEST" \
-  --output db/seed/external-stop-approach-test-202602-v1/seed.sql --check
-python3 -B db/seed/external-stop-approach-test-202602-v1/tests/verify_generated_seed.py \
-  --input-jsonl "$EXTERNAL_INPUT_JSONL" --manifest "$EXTERNAL_MANIFEST" \
-  --sql db/seed/external-stop-approach-test-202602-v1/seed.sql
+cd backend/app/db/seed/external-stop-approach-test-202602-v2
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f seed.sql
 ```
+
+全体が1つのトランザクションです。同じ dataset が既にあると主キー重複で失敗し、何も変更されません。
+
+### v1 からの入れ替え
+
+旧 `external-stop-approach-test-202602-v1` を使っていた DB では、v2 を投入して API の設定を切り替えた後に、旧データを削除します。
+
+```sql
+BEGIN;
+DELETE FROM regulation_points WHERE dataset_id = 'external-stop-approach-test-202602-v1';
+DELETE FROM regulation_datasets WHERE dataset_id = 'external-stop-approach-test-202602-v1';
+COMMIT;
+```
+
+### points.csv.gz の再生成
+
+`points.csv.gz` は `build_points.py` が `result_local.json`(SHA-256 `0c19ade31372def466d7faa18568a367814be3434379916f4cb1a5cf62a6dbe7`)から作ります。元ファイルはリポジトリに含めません。
+
+```sh
+python3 -B build_points.py --input /path/to/result_local.json --output points.csv.gz --check
+```
+
+`--check` を外すと上書きします。入力の SHA-256・件数・`uniqueKey` の一意性と 32 文字以内、座標範囲、`az` の範囲 [0, 360) を検証します。
 
 ### 出典・利用条件
 
-provenance には JARTIC 由来CSVと OSM PBF の subset 別 SHA-256、JARTIC/OSM帰属表示、外部実装sourceの SHA-256 を記録しています。OSM attribution は © OpenStreetMap contributors、データ利用条件は ODbL 1.0 です。外部実装の再配布可否・license は未確認のため、原実装とarchiveは含めず、生成データもチーム内の未承認テスト専用です。provenanceに内部ログや作業環境の絶対パスは含めません。
+元データの出典と利用条件はリポジトリでは確認できていません。チーム内のテスト専用として扱い、本番承認はしません。
