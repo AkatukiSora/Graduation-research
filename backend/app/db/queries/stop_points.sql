@@ -10,7 +10,6 @@ SELECT
     p.direction_status
 FROM regulation_points AS p
 WHERE p.dataset_id = sqlc.arg(dataset_id)::text
-  AND p.dataset_id <> 'external-stop-approach-test-202602-v1'
   AND p.raw_uid = sqlc.arg(raw_uid)::text;
 
 -- name: ListRegulationPointsInRange :many
@@ -24,7 +23,6 @@ SELECT
     p.direction_status
 FROM regulation_points AS p
 WHERE p.dataset_id = sqlc.arg(dataset_id)::text
-  AND p.dataset_id <> 'external-stop-approach-test-202602-v1'
   AND ST_DWithin(
         p.geom,
         ST_SetSRID(ST_MakePoint(sqlc.arg(longitude)::float8, sqlc.arg(latitude)::float8), 4326)::geography,

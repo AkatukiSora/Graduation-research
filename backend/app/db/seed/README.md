@@ -208,7 +208,7 @@ git diff --check
 
 `external-stop-approach-test-202602-v1` は、既存の `regulation_datasets` / `regulation_points` にだけ登録する実験専用データです。実座標を含むため `synthetic=false`、ただし migration の CHECK と seed の双方で `production_approved=false` に固定されます。ポイントは teacher 394件・target 1,939件の計2,333件で、方向は inferred 2,325件・unknown 8件、confirmed 0件です。inferred は実道路・車両の接近方向の正しさを保証せず、confidence は全件未提供（JSON null）です。unknown 8件は `topology_only_unverified` のまま保持します。validity は全件 unknown、候補行は0件です。
 
-通常の `cmd/seed` / `migrate` への自動登録はありません。API selector の既定値も変わりません。この dataset ID を明示 selector に設定しても、range/detail SQL がこの ID だけを除外するため、APIには地点を返しません。既存の `synthetic-v1` / `synthetic-v2` / `nagoya-rule-test-202602-v1` の挙動は変更しません。
+通常の `cmd/seed` / `migrate` への自動登録はありません。API selector の既定値も変わりません。この dataset ID を明示 selector に設定した場合、range/detail API は他の dataset と同じく地点を返します（`production_approved` による API 側の除外はありません）。既存の `synthetic-v1` / `synthetic-v2` / `nagoya-rule-test-202602-v1` の挙動は変更しません。
 
 ### 使い捨てローカルDBへの適用とread-back
 
