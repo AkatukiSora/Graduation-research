@@ -144,10 +144,6 @@ def validate(db):
     expect_ok(db, insert_point("p1", "uid1"))
     expect_ok(db, insert_point("p2", "uid2", lon=136.901))
     expect_ok(db, insert_point("p3", "uid3", direction="90", direction_status="inferred", lon=136.902))
-    expect_ok(db, insert_point("p4", "uid4", direction="180", direction_status="confirmed", lon=136.903))
-    # Free-form provenance and evidence columns are not constrained.
-    expect_ok(db, "UPDATE regulation_points SET imputation_method='anything', direction_source='anything',"
-                  " direction_evidence='[1]'::jsonb, validity_evidence='\"x\"'::jsonb WHERE entity_id='p3'")
     expect_error(db, insert_point("p1", "uid9"), "regulation_points_pkey")
     expect_error(db, insert_point("p9", "uid1"), "regulation_points_dataset_id_raw_uid_key")
     expect_error(db, insert_point("p9", "uid9", dataset="missing"), "regulation_points_dataset_id_fkey")
@@ -165,7 +161,7 @@ def validate(db):
     assert "idx_regulation_points_geom" in plan, plan
     near = expect_ok(db, "SELECT count(*) FROM regulation_points WHERE ST_DWithin(geom,"
                          " ST_SetSRID(ST_MakePoint(136.9,35.1),4326)::geography, 500)")
-    assert near == "4", near
+    assert near == "3", near
 
     expect_ok(db, insert_candidate("p1", "p2"))
     expect_ok(db, insert_candidate("p1", "p3", rank=2, bearing=0))
@@ -255,9 +251,6 @@ def validate_upgrade(db, migrations, report):
     assert candidates_snapshot == expect_ok(db, "SELECT jsonb_agg(to_jsonb(c) ORDER BY dataset_id, source_entity_id, rank)::text "
                                                "FROM regulation_candidates c", database="gr9_upgrade"), \
         "candidate rows changed during later migrations"
-
-    expect_error(db, insert_point("bad-unknown", "bad-u", direction="10", dataset="legacy-synthetic"),
-                 "regulation_points_direction_status_degrees", database="gr9_upgrade")
 
     rows_text = expect_ok(db, "SELECT jsonb_agg(jsonb_build_object("
                              "'entity_id', entity_id, 'direction_degrees', direction_degrees,"

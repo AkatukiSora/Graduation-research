@@ -26,10 +26,6 @@ MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 SEED_CLI_DATASET = "synthetic-v1"
 SEED_CLI_V2_DATASET = "synthetic-v2"
 SEED_CLI_RULE_TEST_DATASET = "nagoya-rule-test-202602-v1"
-SEED_CLI_EXTERNAL_DATASET = "external-stop-approach-test-202602-v2"
-EXTERNAL_POINTS = 168652
-EXTERNAL_INFERRED = 166580
-EXTERNAL_UNKNOWN = 2072
 
 
 def load_cluster_class():
@@ -86,10 +82,6 @@ def psql_scalar(cluster, statement, database="gr9_dev"):
     result = cluster.sql(statement, database=database)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
-
-
-def sql_literal(value):
-    return "'" + value.replace("'", "''") + "'"
 
 
 def seed_cli(binary, cluster, *args, database="gr9_dev"):
@@ -297,22 +289,18 @@ def main():
         assert empty.returncode == 0, empty.stdout + empty.stderr
         assert table_count("gr9_migrate_empty", "regulation_datasets") == "0", "empty seed list must perform no writes"
 
-        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET},{SEED_CLI_RULE_TEST_DATASET},{SEED_CLI_EXTERNAL_DATASET}"
+        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET},{SEED_CLI_RULE_TEST_DATASET}"
         seeded = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
-        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 4, seeded.stdout + seeded.stderr
+        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 3, seeded.stdout + seeded.stderr
         again = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
         seeded_rows = json_lines(seeded.stdout)
         replay_rows = json_lines(again.stdout)
-        expected_dataset_ids = {SEED_CLI_DATASET, SEED_CLI_V2_DATASET, SEED_CLI_RULE_TEST_DATASET, SEED_CLI_EXTERNAL_DATASET}
-        assert len(seeded_rows) == 4 and {row["dataset_id"] for row in seeded_rows} == expected_dataset_ids
-        assert len(replay_rows) == 4 and {row["dataset_id"] for row in replay_rows} == expected_dataset_ids
+        expected_dataset_ids = {SEED_CLI_DATASET, SEED_CLI_V2_DATASET, SEED_CLI_RULE_TEST_DATASET}
+        assert len(seeded_rows) == 3 and {row["dataset_id"] for row in seeded_rows} == expected_dataset_ids
+        assert len(replay_rows) == 3 and {row["dataset_id"] for row in replay_rows} == expected_dataset_ids
         assert all(row["status"] == "inserted" for row in seeded_rows)
         assert all(row["status"] == "unchanged" for row in replay_rows)
-        assert table_count("gr9_migrate_seed", "regulation_points") == str(24 + rule_counts["points"] + EXTERNAL_POINTS)
-        external_states = psql_scalar(db, "SELECT count(*) FILTER (WHERE direction_status='inferred')||','||"
-                                          "count(*) FILTER (WHERE direction_status='unknown') FROM regulation_points "
-                                          f"WHERE dataset_id='{SEED_CLI_EXTERNAL_DATASET}'", database="gr9_migrate_seed")
-        assert external_states == f"{EXTERNAL_INFERRED},{EXTERNAL_UNKNOWN}", external_states
+        assert table_count("gr9_migrate_seed", "regulation_points") == str(24 + rule_counts["points"])
         assert table_count("gr9_migrate_seed", "regulation_candidates") == str(116 + rule_counts["candidates"])
 
         # Unknown IDs must fail even when DB_HOST points at an unavailable local

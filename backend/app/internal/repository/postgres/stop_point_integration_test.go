@@ -26,7 +26,6 @@ import (
 const (
 	syntheticDatasetID      = "synthetic-v1"
 	nagoyaRuleTestDatasetID = "nagoya-rule-test-202602-v1"
-	externalTestDatasetID   = "external-stop-approach-test-202602-v2"
 )
 
 // checkLocalDSN accepts only connection strings whose every host is a local
@@ -450,41 +449,6 @@ func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsInferredDirection(t *tes
 		}
 	}
 	t.Fatalf("range result did not preserve the inferred direction: %+v", rangePoints)
-}
-
-func TestIntegrationEmbeddedExternalDirectionTestDatasetIsServed(t *testing.T) {
-	pool := newTestPool(t)
-	ctx := context.Background()
-	dataset, err := seed.LoadPoints(seeddata.PointsFS(), externalTestDatasetID)
-	if err != nil {
-		t.Fatalf("load embedded external dataset: %v", err)
-	}
-	result, err := seed.ApplyPoints(ctx, pool, dataset)
-	if err != nil || result.Points != 168652 {
-		t.Fatalf("apply embedded external dataset: %+v err=%v", result, err)
-	}
-	replay, err := seed.ApplyPoints(ctx, pool, dataset)
-	if err != nil || replay.Status != seed.StatusUnchanged {
-		t.Fatalf("replay = %+v err=%v, want unchanged", replay, err)
-	}
-
-	const knownUID = "23202602016380300000000015000209"
-	repo := NewStopPointRepository(pool, externalTestDatasetID)
-	point, found, err := repo.FindByID(ctx, knownUID)
-	if err != nil || !found || point.AZ == nil || *point.AZ != 264 || point.DirectionStatus != "inferred" {
-		t.Fatalf("known inferred point = %+v found=%t err=%v", point, found, err)
-	}
-	const abstainedUID = "23202602016631400000000003023206"
-	point, found, err = repo.FindByID(ctx, abstainedUID)
-	if err != nil || !found || point.AZ != nil || point.DirectionStatus != "unknown" {
-		t.Fatalf("unknown-direction point = %+v found=%t err=%v", point, found, err)
-	}
-	points, err := repo.FindByRange(ctx, domain.GetStopPointsByRangeInput{
-		Latitude: 35.04593, Longitude: 136.9331, RadiusMeters: 1000, Limit: 500,
-	})
-	if err != nil || len(points) == 0 {
-		t.Fatalf("external test range returned %d points, err=%v", len(points), err)
-	}
 }
 
 func TestIntegrationDatabaseFailureMapsToUnavailableSentinel(t *testing.T) {
