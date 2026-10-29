@@ -26,8 +26,10 @@ MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 SEED_CLI_DATASET = "synthetic-v1"
 SEED_CLI_V2_DATASET = "synthetic-v2"
 SEED_CLI_RULE_TEST_DATASET = "nagoya-rule-test-202602-v1"
-EXTERNAL_SQL_DATASET = "external-stop-approach-test-202602-v2"
-EXTERNAL_SQL_DIR = APP_DIR / "db" / "seed" / EXTERNAL_SQL_DATASET
+SEED_CLI_EXTERNAL_DATASET = "external-stop-approach-test-202602-v2"
+EXTERNAL_POINTS = 168652
+EXTERNAL_INFERRED = 166580
+EXTERNAL_UNKNOWN = 2072
 
 
 def load_cluster_class():
@@ -86,23 +88,6 @@ def psql_scalar(cluster, statement, database="gr9_dev"):
     return result.stdout.strip()
 
 
-def external_psql_environment(env):
-    return {key: env[key] for key in ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE")}
-
-
-def run_external_seed_sql(cluster, database):
-    env = dict(cluster.env)
-    env.update({
-        "PGHOST": str(cluster.sock),
-        "PGPORT": str(cluster.port),
-        "PGUSER": "validator",
-        "PGDATABASE": database,
-    })
-    command = [str(cluster.bin / "psql"), "-v", "ON_ERROR_STOP=1", "-f", "seed.sql"]
-    result = subprocess.run(command, env=env, cwd=EXTERNAL_SQL_DIR, capture_output=True, text=True, timeout=180)
-    return command, env, result
-
-
 def sql_literal(value):
     return "'" + value.replace("'", "''") + "'"
 
@@ -144,8 +129,7 @@ def main():
     scratch = tempfile.mkdtemp(prefix="seed-cli-", dir=db.tmp.parent)
     try:
         db.start()
-        for setup in ("CREATE ROLE rds_iam NOLOGIN", "CREATE DATABASE gr9_dev", "CREATE DATABASE gr9_upgrade",
-                      "CREATE DATABASE gr9_external_no_schema"):
+        for setup in ("CREATE ROLE rds_iam NOLOGIN", "CREATE DATABASE gr9_dev", "CREATE DATABASE gr9_upgrade"):
             created = db.sql(setup, database="postgres")
             assert created.returncode == 0, created.stderr
         for migration in MIGRATIONS:
@@ -227,50 +211,7 @@ def main():
         assert rule_flags == "true,false", rule_flags
         assert rule_states == expected_rule_states, rule_states
 
-        # The external dataset is applied only by the explicit SQL file, run
-        # with psql over this disposable cluster's private Unix socket.
-        no_schema_command, no_schema_env, no_schema_result = run_external_seed_sql(db, "gr9_external_no_schema")
-        no_schema_output = no_schema_result.stdout + no_schema_result.stderr
-        assert no_schema_result.returncode != 0 and "regulation_datasets" in no_schema_output, no_schema_output
-        no_schema_tables = psql_scalar(db, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'",
-                                       database="gr9_external_no_schema")
-        assert no_schema_tables == "0", f"seed created persistent tables without migrations: {no_schema_tables}"
-
-        seed_sql_command, seed_sql_env, external_first = run_external_seed_sql(db, "gr9_dev")
-        assert external_first.returncode == 0, external_first.stdout + external_first.stderr
-        external_counts = psql_scalar(db, f"SELECT (SELECT count(*) FROM regulation_datasets WHERE dataset_id='{EXTERNAL_SQL_DATASET}')||','||"
-                                          f"(SELECT count(*) FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}')")
-        assert external_counts == "1,168652", external_counts
-        external_states = psql_scalar(db, f"SELECT count(*) FILTER (WHERE direction_status='inferred')||','||"
-                                          f"count(*) FILTER (WHERE direction_status='unknown')||','||"
-                                          f"count(*) FILTER (WHERE direction_status='inferred' AND direction_degrees IS NULL) "
-                                          f"FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}'")
-        assert external_states == "166580,2072,0", external_states
-        known_row = psql_scalar(db, f"SELECT direction_status||','||direction_degrees||','||ST_Y(geom::geometry)||','||ST_X(geom::geometry) "
-                                    f"FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}' "
-                                    f"AND raw_uid='23202602016380300000000015000209'")
-        assert known_row == "inferred,264,35.04593,136.9331", known_row
-
-        # A second run is rejected and leaves the stored rows untouched.
-        replay_command, _, external_replay = run_external_seed_sql(db, "gr9_dev")
-        assert external_replay.returncode != 0 and "regulation_datasets_pkey" in external_replay.stdout + external_replay.stderr, external_replay.stdout + external_replay.stderr
-        assert psql_scalar(db, f"SELECT count(*) FROM regulation_points WHERE dataset_id='{EXTERNAL_SQL_DATASET}'") == "168652"
-
-        summary.update(
-            external_seed_connection_url=f"postgresql://validator@/gr9_dev?host={db.sock}&port={db.port}",
-            external_seed_psql_environment=external_psql_environment(seed_sql_env),
-            external_seed_no_schema_command=no_schema_command,
-            external_seed_no_schema_returncode=no_schema_result.returncode,
-            external_seed_no_schema_public_tables=no_schema_tables,
-            external_seed_first_command=seed_sql_command,
-            external_seed_first_returncode=external_first.returncode,
-            external_seed_replay_command=replay_command,
-            external_seed_replay_returncode=external_replay.returncode,
-            external_seed_counts=external_counts,
-            external_seed_states=external_states,
-        )
-
-        # The API repository reads the dataset the CLI and explicit SQL just applied.
+        # The API repository reads the dataset the CLI just applied.
         repo_tests = run([go, "test", "./internal/repository/postgres/...", "-run", "Integration", "-count=1", "-v"],
                          dict(env, TEST_DATABASE_URL=url))
         if args.log:
@@ -356,18 +297,22 @@ def main():
         assert empty.returncode == 0, empty.stdout + empty.stderr
         assert table_count("gr9_migrate_empty", "regulation_datasets") == "0", "empty seed list must perform no writes"
 
-        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET},{SEED_CLI_RULE_TEST_DATASET}"
+        seed_ids = f"{SEED_CLI_DATASET},{SEED_CLI_V2_DATASET},{SEED_CLI_RULE_TEST_DATASET},{SEED_CLI_EXTERNAL_DATASET}"
         seeded = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
-        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 3, seeded.stdout + seeded.stderr
+        assert seeded.returncode == 0 and seeded.stdout.count('"status":"inserted"') == 4, seeded.stdout + seeded.stderr
         again = migrate_cli(migrate_binary, db, "gr9_migrate_seed", atlas, seed_ids)
         seeded_rows = json_lines(seeded.stdout)
         replay_rows = json_lines(again.stdout)
-        expected_dataset_ids = {SEED_CLI_DATASET, SEED_CLI_V2_DATASET, SEED_CLI_RULE_TEST_DATASET}
-        assert len(seeded_rows) == 3 and {row["dataset_id"] for row in seeded_rows} == expected_dataset_ids
-        assert len(replay_rows) == 3 and {row["dataset_id"] for row in replay_rows} == expected_dataset_ids
+        expected_dataset_ids = {SEED_CLI_DATASET, SEED_CLI_V2_DATASET, SEED_CLI_RULE_TEST_DATASET, SEED_CLI_EXTERNAL_DATASET}
+        assert len(seeded_rows) == 4 and {row["dataset_id"] for row in seeded_rows} == expected_dataset_ids
+        assert len(replay_rows) == 4 and {row["dataset_id"] for row in replay_rows} == expected_dataset_ids
         assert all(row["status"] == "inserted" for row in seeded_rows)
         assert all(row["status"] == "unchanged" for row in replay_rows)
-        assert table_count("gr9_migrate_seed", "regulation_points") == str(24 + rule_counts["points"])
+        assert table_count("gr9_migrate_seed", "regulation_points") == str(24 + rule_counts["points"] + EXTERNAL_POINTS)
+        external_states = psql_scalar(db, "SELECT count(*) FILTER (WHERE direction_status='inferred')||','||"
+                                          "count(*) FILTER (WHERE direction_status='unknown') FROM regulation_points "
+                                          f"WHERE dataset_id='{SEED_CLI_EXTERNAL_DATASET}'", database="gr9_migrate_seed")
+        assert external_states == f"{EXTERNAL_INFERRED},{EXTERNAL_UNKNOWN}", external_states
         assert table_count("gr9_migrate_seed", "regulation_candidates") == str(116 + rule_counts["candidates"])
 
         # Unknown IDs must fail even when DB_HOST points at an unavailable local
@@ -403,7 +348,7 @@ def main():
     rendered_summary = json.dumps(summary, sort_keys=True)
     if args.log:
         with args.log.open("a") as log:
-            log.write("\nIntegration summary and exact external psql commands:\n" + rendered_summary + "\n")
+            log.write("\nIntegration summary:\n" + rendered_summary + "\n")
     print(rendered_summary)
     sys.exit(0 if summary["passed"] and summary["database_stopped"] else 1)
 

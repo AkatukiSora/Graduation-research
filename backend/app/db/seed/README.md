@@ -206,24 +206,32 @@ git diff --check
 
 ## external stop-approach direction test seed
 
-`external-stop-approach-test-202602-v2` は、方位推定結果 `result_local.json`(168,652地点)を `regulation_datasets` / `regulation_points` に入れる実験用データです。地点ごとの `uniqueKey` が `entity_id` と `raw_uid`、`lat`/`lon` が位置、`az` が `direction_degrees` になります。`az` があれば `direction_status = inferred`、なければ `unknown`(166,580件 / 2,072件)です。それ以外の列は既定値のままで、元データの `error` は取り込みません。`synthetic = false`、`production_approved = false` です。
+`external-stop-approach-test-202602-v2` は、方位推定結果 `result_local.json`(168,652地点)を `regulation_datasets` / `regulation_points` に入れる実験用データです。他の埋め込み dataset と違い、地点だけを持つ軽量な形式で、候補・evidence・出典は持ちません。
 
-`migrate` や `cmd/seed` からは投入されません。API で配信するには `STOP_POINT_DATASET_ID=external-stop-approach-test-202602-v2` を設定します。
+`uniqueKey` が `entity_id` と `raw_uid`、`lat`/`lon` が位置、`az` が `direction_degrees` になります。`az` があれば `direction_status = inferred`(166,580件)、なければ `unknown`(2,072件)です。それ以外の列は既定値のままで、元データの `error` は取り込みません。`synthetic = false`、`production_approved = false` です。
 
-### 投入
-
-migration を適用した PostgreSQL/PostGIS に対し、このディレクトリで psql を実行します。`points.csv.gz` は `gzip` で展開されるため、`gzip` が使える環境で実行してください。
-
-```sh
-cd backend/app/db/seed/external-stop-approach-test-202602-v2
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f seed.sql
+```text
+internal/seeddata/points/external-stop-approach-test-202602-v2/
+├── meta.json        # dataset ID・月・地域・元ファイルの SHA-256・件数
+├── points.csv.gz    # uid,lat,lon,az(az が空なら方向不明)
+└── build_points.py  # result_local.json から上の2ファイルを生成・照合する
 ```
 
-全体が1つのトランザクションです。同じ dataset が既にあると主キー重複で失敗し、何も変更されません。
+### 投入と配信
+
+`migrate` は `SEED_DATASET_IDS` にこの ID があるとき、Atlas の適用後に投入します(他の dataset と同じ経路)。ECS の migration タスクでは、Terraform の `stop_point_dataset_id` が `SEED_DATASET_IDS`(migration タスク)と `STOP_POINT_DATASET_ID`(API)の両方に渡されます。
+
+```sh
+SEED_DATASET_IDS=external-stop-approach-test-202602-v2 /migrate
+```
+
+- 1 dataset を1トランザクションで書きます。同じ内容が保存済みなら `unchanged` を返します。
+- 同じ ID で digest が違う場合、または同じ digest が別の ID にある場合は、書き込まずに失敗します。
+- `migrate` は DB に接続する前に、行の形式(`uid` の長さと一意性、座標・`az` の範囲、件数)を検証します。
 
 ### v1 からの入れ替え
 
-旧 `external-stop-approach-test-202602-v1` を使っていた DB では、v2 を投入して API の設定を切り替えた後に、旧データを削除します。
+旧 `external-stop-approach-test-202602-v1` を投入済みの DB では、API の設定を v2 に切り替えた後に旧データを削除します。
 
 ```sql
 BEGIN;
@@ -232,12 +240,13 @@ DELETE FROM regulation_datasets WHERE dataset_id = 'external-stop-approach-test-
 COMMIT;
 ```
 
-### points.csv.gz の再生成
+### 再生成
 
-`points.csv.gz` は `build_points.py` が `result_local.json`(SHA-256 `0c19ade31372def466d7faa18568a367814be3434379916f4cb1a5cf62a6dbe7`)から作ります。元ファイルはリポジトリに含めません。
+`meta.json` と `points.csv.gz` は `result_local.json`(SHA-256 `0c19ade31372def466d7faa18568a367814be3434379916f4cb1a5cf62a6dbe7`)から作ります。元ファイルはリポジトリに含めません。
 
 ```sh
-python3 -B build_points.py --input /path/to/result_local.json --output points.csv.gz --check
+cd backend/app/internal/seeddata/points/external-stop-approach-test-202602-v2
+python3 -B build_points.py --input /path/to/result_local.json --check
 ```
 
 `--check` を外すと上書きします。入力の SHA-256・件数・`uniqueKey` の一意性と 32 文字以内、座標範囲、`az` の範囲 [0, 360) を検証します。

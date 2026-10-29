@@ -452,33 +452,34 @@ func TestIntegrationEmbeddedNagoyaRuleTestDatasetReturnsInferredDirection(t *tes
 	t.Fatalf("range result did not preserve the inferred direction: %+v", rangePoints)
 }
 
-func TestIntegrationExternalDirectionTestDatasetIsServed(t *testing.T) {
+func TestIntegrationEmbeddedExternalDirectionTestDatasetIsServed(t *testing.T) {
 	pool := newTestPool(t)
-	const rawUID = "23202602016380300000000015000209"
-	var externalRows int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM regulation_points WHERE dataset_id=$1`,
-		externalTestDatasetID).Scan(&externalRows); err != nil {
-		t.Fatal(err)
+	ctx := context.Background()
+	dataset, err := seed.LoadPoints(seeddata.PointsFS(), externalTestDatasetID)
+	if err != nil {
+		t.Fatalf("load embedded external dataset: %v", err)
 	}
-	if externalRows != 168652 {
-		t.Fatalf("external test fixture has %d rows, want 168652; run the explicit SQL integration harness", externalRows)
+	result, err := seed.ApplyPoints(ctx, pool, dataset)
+	if err != nil || result.Points != 168652 {
+		t.Fatalf("apply embedded external dataset: %+v err=%v", result, err)
 	}
-	var externalNearbyRows int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM regulation_points
-		WHERE dataset_id=$1 AND raw_uid=$2 AND ST_DWithin(
-			geom, ST_SetSRID(ST_MakePoint(136.9331, 35.04593), 4326)::geography, 1000)`,
-		externalTestDatasetID, rawUID).Scan(&externalNearbyRows); err != nil {
-		t.Fatal(err)
-	}
-	if externalNearbyRows != 1 {
-		t.Fatalf("external API fixture row near the query center = %d, want exactly 1", externalNearbyRows)
+	replay, err := seed.ApplyPoints(ctx, pool, dataset)
+	if err != nil || replay.Status != seed.StatusUnchanged {
+		t.Fatalf("replay = %+v err=%v, want unchanged", replay, err)
 	}
 
+	const knownUID = "23202602016380300000000015000209"
 	repo := NewStopPointRepository(pool, externalTestDatasetID)
-	if _, found, err := repo.FindByID(context.Background(), rawUID); err != nil || !found {
-		t.Fatalf("external test detail was not served: found=%t err=%v", found, err)
+	point, found, err := repo.FindByID(ctx, knownUID)
+	if err != nil || !found || point.AZ == nil || *point.AZ != 264 || point.DirectionStatus != "inferred" {
+		t.Fatalf("known inferred point = %+v found=%t err=%v", point, found, err)
 	}
-	points, err := repo.FindByRange(context.Background(), domain.GetStopPointsByRangeInput{
+	const abstainedUID = "23202602016631400000000003023206"
+	point, found, err = repo.FindByID(ctx, abstainedUID)
+	if err != nil || !found || point.AZ != nil || point.DirectionStatus != "unknown" {
+		t.Fatalf("unknown-direction point = %+v found=%t err=%v", point, found, err)
+	}
+	points, err := repo.FindByRange(ctx, domain.GetStopPointsByRangeInput{
 		Latitude: 35.04593, Longitude: 136.9331, RadiusMeters: 1000, Limit: 500,
 	})
 	if err != nil || len(points) == 0 {

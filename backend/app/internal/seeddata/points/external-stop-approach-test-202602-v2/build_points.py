@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert result_local.json into points.csv.gz (uid,lat,lon,az) for seed.sql."""
+"""Convert result_local.json into points.csv.gz (uid,lat,lon,az) and meta.json."""
 import argparse
 import csv
 import gzip
@@ -12,6 +12,7 @@ from pathlib import Path
 
 SOURCE_SHA256 = "0c19ade31372def466d7faa18568a367814be3434379916f4cb1a5cf62a6dbe7"
 EXPECTED_ROWS = 168652
+DATASET_ID = "external-stop-approach-test-202602-v2"
 
 
 def render(source: bytes) -> bytes:
@@ -40,18 +41,24 @@ def render(source: bytes) -> bytes:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path, help="result_local.json")
-    parser.add_argument("--output", required=True, type=Path, help="points.csv.gz")
+    parser.add_argument("--output-dir", default=Path(__file__).parent, type=Path, help="directory for points.csv.gz and meta.json")
     parser.add_argument("--check", action="store_true", help="compare with the existing output instead of writing")
     args = parser.parse_args()
     csv_bytes = render(args.input.read_bytes())
+    meta = json.dumps({
+        "dataset_id": DATASET_ID, "source_month": "202602", "region_id": "jp:external-test",
+        "content_sha256": SOURCE_SHA256, "points": EXPECTED_ROWS,
+    }, indent=2) + "\n"
+    points_path, meta_path = args.output_dir / "points.csv.gz", args.output_dir / "meta.json"
     if args.check:
-        if gzip.decompress(args.output.read_bytes()) != csv_bytes:
-            sys.exit("points.csv.gz differs from result_local.json")
-        print(f"points.csv.gz matches: {csv_bytes.count(10)} rows")
+        if gzip.decompress(points_path.read_bytes()) != csv_bytes or meta_path.read_text() != meta:
+            sys.exit("points.csv.gz or meta.json differs from result_local.json")
+        print(f"matches: {csv_bytes.count(10)} rows")
         return
-    with args.output.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz:
+    with points_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz:
         gz.write(csv_bytes)
-    print(f"wrote {args.output}: {csv_bytes.count(10)} rows")
+    meta_path.write_text(meta)
+    print(f"wrote {points_path} and {meta_path}: {csv_bytes.count(10)} rows")
 
 
 if __name__ == "__main__":
