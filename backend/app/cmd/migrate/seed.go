@@ -80,3 +80,34 @@ func runSeed(ctx context.Context, db seed.Beginner, fsys fs.FS, ids []string, ou
 	}
 	return applySeedBundles(ctx, db, bundles, out)
 }
+
+// loadSeedPoints validates the requested points-only datasets and returns the
+// ids that are not points-only, which are bundles.
+func loadSeedPoints(fsys fs.FS, ids []string) ([]*seed.PointsDataset, []string, error) {
+	var datasets []*seed.PointsDataset
+	var rest []string
+	for _, id := range ids {
+		if !seed.HasPoints(fsys, id) {
+			rest = append(rest, id)
+			continue
+		}
+		dataset, err := seed.LoadPoints(fsys, id)
+		if err != nil {
+			return nil, nil, fmt.Errorf("seed dataset %q: %w", id, err)
+		}
+		datasets = append(datasets, dataset)
+	}
+	return datasets, rest, nil
+}
+
+func applySeedPoints(ctx context.Context, db seed.Beginner, datasets []*seed.PointsDataset, out io.Writer) error {
+	for _, dataset := range datasets {
+		result, err := seed.ApplyPoints(ctx, db, dataset)
+		if err != nil {
+			return fmt.Errorf("apply seed dataset %q: %w", dataset.DatasetID, err)
+		}
+		line, _ := json.Marshal(seedReport{DatasetID: dataset.DatasetID, Status: result.Status, Points: result.Points})
+		fmt.Fprintln(out, string(line))
+	}
+	return nil
+}

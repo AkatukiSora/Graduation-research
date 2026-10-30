@@ -20,7 +20,6 @@ APP_DIR = Path(__file__).resolve().parents[3]
 MIGRATIONS = sorted((APP_DIR / "db" / "migrations").glob("*.sql"))
 DIGEST = "a" * 64
 SQL_NULL = object()
-EXTERNAL_DATASET_ID = "external-stop-approach-test-202602-v1"
 
 
 class Cluster:
@@ -106,66 +105,11 @@ def insert_dataset(dataset_id="ds1", digest=DIGEST, month="202602", synthetic="t
 
 
 def insert_point(entity, uid, direction="NULL", direction_status="unknown", validity="unknown",
-                 lon=136.9, lat=35.1, dataset="ds1", imputation_method=None,
-                 imputation_reason=None, direction_source=None, direction_evidence=None,
-                 validity_reason=None, validity_evidence=None):
-    columns = ["dataset_id", "entity_id", "raw_uid", "geom", "direction_degrees",
-               "direction_status", "validity_status", "normalization_status"]
-    values = [f"'{dataset}'", f"'{entity}'", f"'{uid}'",
-              f"ST_SetSRID(ST_MakePoint({lon},{lat}),4326)::geography", direction,
-              f"'{direction_status}'", f"'{validity}'", "'normalized'"]
-    direction_fields = (imputation_method, imputation_reason, direction_source, direction_evidence)
-    if any(value is not None for value in direction_fields):
-        assert all(value is not None for value in direction_fields), "direction evidence fields must be supplied together"
-        columns.extend(["imputation_method", "imputation_reason", "direction_source", "direction_evidence"])
-        values.extend([f"'{imputation_method}'", f"'{imputation_reason}'", f"'{direction_source}'",
-                       f"'{json.dumps(direction_evidence, separators=(',', ':'))}'::jsonb"])
-    validity_fields = (validity_reason, validity_evidence)
-    if any(value is not None for value in validity_fields):
-        assert all(value is not None for value in validity_fields), "validity evidence fields must be supplied together"
-        columns.extend(["validity_reason", "validity_evidence"])
-        values.extend([f"'{validity_reason}'", f"'{json.dumps(validity_evidence, separators=(',', ':'))}'::jsonb"])
-    return f"INSERT INTO regulation_points ({', '.join(columns)}) VALUES ({', '.join(values)});"
-
-
-def update_direction_evidence(entity, dataset, evidence):
-    if evidence is SQL_NULL:
-        value = "NULL"
-    else:
-        encoded = json.dumps(evidence, separators=(",", ":"))
-        value = "'" + encoded.replace("'", "''") + "'::jsonb"
-    return ("UPDATE regulation_points SET direction_evidence = " + value +
-            f" WHERE dataset_id = '{dataset}' AND entity_id = '{entity}';")
-
-
-def external_direction_evidence(entity):
-    return {
-        "schema_version": 1, "kind": "external_local_stop_approach",
-        "source_csv_sha256": "2a69fbe3a130da8fb3a48a91e38e8c9a2bd13561dfeec9c258a3f30284a222c1",
-        "method_version": "local-stop-approach-offline-v1",
-        "direction_semantics": "vehicle_approach_to_stop_estimate",
-        "artifact_sha256": "02eeb6998b5e926844448b4260d29c95f5b9a8a1b4216397789cbf1973493ebe",
-        "record_ref": entity, "subset": "teacher", "confidence": None,
-    }
-
-
-def insert_external_point(entity, uid, dataset, evidence, lon=145.0, lat=45.0):
-    return insert_point(
-        entity, uid, direction="123.5", direction_status="inferred", lon=lon, lat=lat, dataset=dataset,
-        imputation_method="external_local_stop_approach", imputation_reason="model_direction_inference",
-        direction_source="external_local_stop_approach", direction_evidence=evidence,
-    )
-
-
-def validate_external_dataset_scope(db, approved_dataset, tag, database="gr9_dev"):
-    entity = f"external-scope-{tag}"
-    evidence = external_direction_evidence(entity)
-    expect_ok(db, insert_external_point(entity, f"uid-scope-{tag}", EXTERNAL_DATASET_ID, evidence), database=database)
-    approval = expect_ok(db, f"SELECT production_approved::text FROM regulation_datasets WHERE dataset_id='{approved_dataset}'",
-                         database=database)
-    assert approval == "true", f"{approved_dataset} is not production-approved: {approval}"
-    expect_error(db, insert_external_point(entity, f"uid-scope-alt-{tag}", approved_dataset, evidence),
-                 "regulation_points_direction_consistency", database=database)
+                 lon=136.9, lat=35.1, dataset="ds1"):
+    return ("INSERT INTO regulation_points (dataset_id, entity_id, raw_uid, geom, direction_degrees,"
+            " direction_status, validity_status, normalization_status) VALUES "
+            f"('{dataset}', '{entity}', '{uid}', ST_SetSRID(ST_MakePoint({lon},{lat}),4326)::geography,"
+            f" {direction}, '{direction_status}', '{validity}', 'normalized');")
 
 
 def insert_candidate(source, neighbor, rank: int = 1, distance: "float | str" = 10.0, bearing: "float | str" = 45.0, dataset="ds1",
@@ -199,278 +143,16 @@ def validate(db):
 
     expect_ok(db, insert_point("p1", "uid1"))
     expect_ok(db, insert_point("p2", "uid2", lon=136.901))
-    nearest_evidence = {
-        "schema_version": 2, "kind": "nearest_stop_reference", "source_csv_sha256": "a" * 64,
-        "method_version": "nearest-stop-proxy-v1", "direction_semantics": "stop_to_neighbor_proxy",
-        "neighbor_entity_id": "p2", "candidate_rank": 1,
-    }
-    expect_ok(db, insert_point(
-        "p3", "uid3", direction="90", direction_status="inferred", lon=136.902,
-        imputation_method="nearest_stop_reference", imputation_reason="topology_proxy_unverified",
-        direction_source="nearest_stop", direction_evidence=nearest_evidence,
-    ))
-    point_columns = expect_ok(db, "SELECT string_agg(column_name, ',' ORDER BY column_name) FROM information_schema.columns"
-                              " WHERE table_schema='public' AND table_name='regulation_points' AND column_name IN"
-                              " ('imputation_method','imputation_reason','direction_source','direction_evidence','validity_reason','validity_evidence')")
-    assert point_columns == "direction_evidence,direction_source,imputation_method,imputation_reason,validity_evidence,validity_reason", point_columns
-    bad_evidence = {
-        "schema_version": 2, "kind": "nearest_stop_reference", "source_csv_sha256": "a" * 64,
-        "method_version": "nearest-stop-proxy-v1", "direction_semantics": "stop_to_neighbor_proxy",
-        "neighbor_entity_id": "p2", "candidate_rank": 1, "unrecognized": True,
-    }
-    expect_error(db, insert_point(
-        "bad-evidence", "uid-bad", direction="91", direction_status="inferred",
-        imputation_method="nearest_stop_reference", imputation_reason="topology_proxy_unverified",
-        direction_source="nearest_stop", direction_evidence=bad_evidence,
-    ), "regulation_points_direction_consistency")
-    source_geometry_evidence = {
-        "schema_version": 2, "kind": "source_geometry", "source_csv_sha256": "a" * 64,
-        "method_version": "entrance-to-stop-sphere-v1",
-        "direction_semantics": "vehicle_approach_to_stop_estimate",
-        "entrance": {"lon": 136.9, "lat": 35.1},
-    }
-    osm_evidence = {
-        "schema_version": 2, "kind": "model_inference", "source_csv_sha256": "a" * 64,
-        "method_version": "reserved-osm-test-v1",
-        "direction_semantics": "vehicle_approach_to_stop_estimate",
-        "artifact_sha256": "b" * 64, "record_ref": "evidence/osm-record-1",
-        "model_version": "test-model-v1", "feature_parent_sha256": "c" * 64,
-    }
-
-    external_dataset = EXTERNAL_DATASET_ID
-    expect_ok(db, insert_dataset(external_dataset, digest="e" * 64, month="202602", synthetic="false"))
-    expect_error(db, insert_dataset(external_dataset, digest="f" * 64, month="202602", synthetic="false", approved="true"),
-                 "regulation_datasets_external_direction_test_not_approved")
-    expect_ok(db, insert_dataset("non-external-approved", digest="f" * 64, synthetic="false", approved="true"))
-    external_evidence = external_direction_evidence("external-good")
-    expect_ok(db, insert_external_point("external-good", "uid-external-good", external_dataset, external_evidence,
-                                        lon=145.0, lat=45.0))
-    validate_external_dataset_scope(db, "non-external-approved", "fresh")
-
-    external_mutation_count = 0
-
-    def reject_external_mutation(name, changed_field, mutate, expected_constraint="regulation_points_direction_consistency"):
-        nonlocal external_mutation_count
-        entity = f"external-negative-{name}"
-        uid = f"uid-ext-mutation-{external_mutation_count:03d}"
-        base = external_direction_evidence(entity)
-        malformed = mutate(base)
-        if changed_field != "$":
-            assert isinstance(malformed, dict), (name, malformed)
-            unchanged = object()
-            changed = {key for key in set(base) | set(malformed)
-                       if base.get(key, unchanged) != malformed.get(key, unchanged)}
-            assert changed == {changed_field}, f"{name} changed {changed}, expected only {changed_field}"
-        expect_ok(db, insert_external_point(
-            entity, uid, external_dataset, base, lon=145.1 + external_mutation_count * 0.001, lat=45.0,
-        ))
-        expect_error(db, update_direction_evidence(entity, external_dataset, malformed), expected_constraint)
-        external_mutation_count += 1
-
-    external_keys = tuple(external_direction_evidence("external-key-list").keys())
-    for key in external_keys:
-        reject_external_mutation(
-            f"missing-{key}", key,
-            lambda base, field=key: {name: value for name, value in base.items() if name != field},
-        )
-    for key in external_keys:
-        if key != "confidence":
-            reject_external_mutation(
-                f"json-null-{key}", key,
-                lambda base, field=key: {**base, field: None},
-            )
-    wrong_types = {
-        "schema_version": "1", "kind": 1, "source_csv_sha256": 1,
-        "method_version": False, "direction_semantics": [], "artifact_sha256": {},
-        "record_ref": 1, "subset": [], "confidence": "null",
-    }
-    for key, invalid_value in wrong_types.items():
-        reject_external_mutation(
-            f"wrong-type-{key}", key,
-            lambda base, field=key, value=invalid_value: {**base, field: value},
-        )
-    for name, changed_field, mutate in (
-        ("extra-key", "unrecognized", lambda base: {**base, "unrecognized": True}),
-        ("nonnull-confidence", "confidence", lambda base: {**base, "confidence": 0.75}),
-        ("wrong-artifact", "artifact_sha256", lambda base: {**base, "artifact_sha256": "b" * 64}),
-        ("wrong-csv-hash", "source_csv_sha256", lambda base: {**base, "source_csv_sha256": "0d902b472980d40fa7b472998e3424c73ad4730108fac9655ac1b23e82ee573d"}),
-        ("wrong-record-ref", "record_ref", lambda base: {**base, "record_ref": "another-point"}),
-        ("wrong-subset", "subset", lambda base: {**base, "subset": "unknown"}),
-        ("wrong-subset-csv-hash", "subset", lambda base: {**base, "subset": "target"}),
-        ("bad-csv-digest", "source_csv_sha256", lambda base: {**base, "source_csv_sha256": "not-a-digest"}),
-    ):
-        reject_external_mutation(name, changed_field, mutate)
-    for name, json_value in (("top-level-json-null", None), ("top-level-array", []),
-                             ("top-level-string", "not-an-object"), ("top-level-number", 1)):
-        reject_external_mutation(name, "$", lambda _base, value=json_value: value)
-    reject_external_mutation(
-        "top-level-sql-null", "$", lambda _base: SQL_NULL,
-        expected_constraint='null value in column "direction_evidence"',
-    )
-
-    def reject_external_direction_update(name, invalid_direction):
-        nonlocal external_mutation_count
-        entity = f"external-direction-negative-{name}"
-        uid = f"uid-ext-direction-{external_mutation_count:03d}"
-        evidence = external_direction_evidence(entity)
-        expect_ok(db, insert_external_point(
-            entity, uid, external_dataset, evidence, lon=145.1 + external_mutation_count * 0.001, lat=45.0,
-        ))
-        expect_error(db, f"UPDATE regulation_points SET direction_degrees={invalid_direction} "
-                         f"WHERE dataset_id='{external_dataset}' AND entity_id='{entity}';",
-                     "regulation_points_direction_consistency")
-        external_mutation_count += 1
-
-    for name, invalid_degree in (("nan", "'NaN'"), ("positive-infinity", "'Infinity'"),
-                                 ("negative-infinity", "'-Infinity'")):
-        reject_external_direction_update(name, invalid_degree)
-
-    inferred_cases = [
-        ("source", "source_entrance_geometry", "source_geometry_derived", "jartic_entrance", source_geometry_evidence),
-        ("nearest", "nearest_stop_reference", "topology_proxy_unverified", "nearest_stop", nearest_evidence),
-        ("osm", "osm_fusion_cautious", "model_direction_inference", "osm_fusion", osm_evidence),
-    ]
-    for name, method, reason, source, evidence in inferred_cases:
-        if name != "nearest":
-            expect_ok(db, insert_point(
-                f"evidence-{name}", f"uid-evidence-{name}", direction="90", direction_status="inferred",
-                lon=140.0, imputation_method=method, imputation_reason=reason,
-                direction_source=source, direction_evidence=evidence,
-            ))
-        for index, field in enumerate(("kind", "source_csv_sha256", "method_version", "direction_semantics")):
-            malformed = {**evidence, field: None}
-            expect_error(db, insert_point(
-                f"null-{name}-{field}", f"u-{name}-null-{index}", direction="91", direction_status="inferred",
-                imputation_method=method, imputation_reason=reason,
-                direction_source=source, direction_evidence=malformed,
-            ), "regulation_points_direction_consistency")
-        wrong_schema = {**evidence, "schema_version": 3}
-        expect_error(db, insert_point(
-            f"schema-{name}-3", f"uid-schema-{name}-3", direction="92", direction_status="inferred",
-            imputation_method=method, imputation_reason=reason,
-            direction_source=source, direction_evidence=wrong_schema,
-        ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "nearest-null-neighbor", "uid-nearest-null-neighbor", direction="93", direction_status="inferred",
-        imputation_method="nearest_stop_reference", imputation_reason="topology_proxy_unverified",
-        direction_source="nearest_stop", direction_evidence={**nearest_evidence, "neighbor_entity_id": None},
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "nearest-null-rank", "uid-nearest-null-rank", direction="94", direction_status="inferred",
-        imputation_method="nearest_stop_reference", imputation_reason="topology_proxy_unverified",
-        direction_source="nearest_stop", direction_evidence={**nearest_evidence, "candidate_rank": None},
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "source-null-lon", "uid-source-null-lon", direction="95", direction_status="inferred",
-        imputation_method="source_entrance_geometry", imputation_reason="source_geometry_derived",
-        direction_source="jartic_entrance",
-        direction_evidence={**source_geometry_evidence, "entrance": {"lon": None, "lat": 35.1}},
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "osm-null-artifact", "uid-osm-null-artifact", direction="96", direction_status="inferred",
-        imputation_method="osm_fusion_cautious", imputation_reason="model_direction_inference",
-        direction_source="osm_fusion", direction_evidence={**osm_evidence, "artifact_sha256": None},
-    ), "regulation_points_direction_consistency")
-
-    confirmed_evidence = {
-        "schema_version": 1, "kind": "field_observation", "entity_id": "confirmed-evidence",
-        "source_month": "202602", "source_csv_sha256": "a" * 64,
-        "artifact_sha256": "b" * 64, "record_ref": "evidence/field-observation-1",
-        "method_version": "field-observation-v1", "direction_semantics": "vehicle_approach_to_stop",
-        "observation_ref": "observation/1", "observed_at": "2026-10-14T00:00:00Z",
-        "observation_sha256": "c" * 64,
-    }
-    expect_ok(db, insert_point(
-        "confirmed-evidence", "uid-confirmed-evidence", direction="180", direction_status="confirmed",
-        lon=141.0, imputation_method="field_observation", imputation_reason="none",
-        direction_source="field_survey", direction_evidence=confirmed_evidence,
-    ))
-    missing_observation_ref = {key: value for key, value in confirmed_evidence.items() if key != "observation_ref"}
-    expect_error(db, insert_point(
-        "confirmed-missing-key", "uid-confirmed-missing-key", direction="180", direction_status="confirmed",
-        imputation_method="field_observation", imputation_reason="none",
-        direction_source="field_survey", direction_evidence=missing_observation_ref,
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "confirmed-wrong-type", "uid-confirmed-wrong-type", direction="180", direction_status="confirmed",
-        imputation_method="field_observation", imputation_reason="none", direction_source="field_survey",
-        direction_evidence={**confirmed_evidence, "observed_at": None},
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "confirmed-schema-2", "uid-confirmed-schema-2", direction="180", direction_status="confirmed",
-        imputation_method="field_observation", imputation_reason="none", direction_source="field_survey",
-        direction_evidence={**confirmed_evidence, "schema_version": 2},
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "confirmed-arbitrary", "uid-confirmed-arbitrary", direction="180", direction_status="confirmed",
-        imputation_method="field_observation", imputation_reason="none", direction_source="field_survey",
-        direction_evidence={"junk": True},
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "confirmed-extra-key", "uid-confirmed-extra-key", direction="180", direction_status="confirmed",
-        imputation_method="field_observation", imputation_reason="none", direction_source="field_survey",
-        direction_evidence={**confirmed_evidence, "unrecognized": True},
-    ), "regulation_points_direction_consistency")
-
-    for status, reason in (("valid", "active_regulation_evidence"), ("invalid", "withdrawn_regulation_evidence")):
-        validity_evidence = {
-            "schema_version": 1, "kind": "regulation_validity", "entity_id": f"validity-{status}",
-            "source_month": "202602", "source_csv_sha256": "a" * 64,
-            "artifact_sha256": "b" * 64, "record_ref": f"evidence/validity-{status}",
-            "method_version": "validity-review-v1", "effective_at": "2026-02-01T00:00:00Z",
-            "validity_review_sha256": "c" * 64,
-        }
-        expect_ok(db, insert_point(
-            f"validity-{status}", f"uid-validity-{status}", validity=status, validity_reason=reason,
-            validity_evidence=validity_evidence, lon=142.0,
-        ))
-        missing_review_hash = {key: value for key, value in validity_evidence.items() if key != "validity_review_sha256"}
-        expect_error(db, insert_point(
-            f"validity-{status}-missing-key", f"uid-validity-{status}-missing-key",
-            validity=status, validity_reason=reason, validity_evidence=missing_review_hash,
-        ), "regulation_points_validity_consistency")
-        expect_error(db, insert_point(
-            f"validity-{status}-wrong-type", f"uid-validity-{status}-wrong-type",
-            validity=status, validity_reason=reason,
-            validity_evidence={**validity_evidence, "artifact_sha256": None},
-        ), "regulation_points_validity_consistency")
-        expect_error(db, insert_point(
-            f"validity-{status}-arbitrary", f"uid-validity-{status}-arbitrary",
-            validity=status, validity_reason=reason, validity_evidence={"junk": True},
-        ), "regulation_points_validity_consistency")
-        expect_error(db, insert_point(
-            f"validity-{status}-extra-key", f"uid-validity-{status}-extra-key",
-            validity=status, validity_reason=reason,
-            validity_evidence={**validity_evidence, "unrecognized": True},
-        ), "regulation_points_validity_consistency")
-
-    # Known legacy values are allowed only through the explicit S1 exception.
-    expect_ok(db, insert_point(
-        "legacy-known-direction", "uid-legacy-known-direction", direction="123.5",
-        direction_status="inferred", lon=143.0,
-    ))
-    expect_ok(db, insert_point(
-        "legacy-known-validity", "uid-legacy-known-validity", validity="valid",
-        validity_reason="legacy_unrecorded", validity_evidence={}, lon=144.0,
-    ))
-    expect_error(db, insert_point(
-        "array-evidence", "uid-array", direction="92", direction_status="confirmed",
-        imputation_method="field_observation", imputation_reason="none", direction_source="field_survey",
-        direction_evidence=[],
-    ), "regulation_points_direction_consistency")
-    expect_error(db, insert_point(
-        "array-validity", "uid-validity", validity="valid", validity_reason="active_regulation_evidence",
-        validity_evidence=[],
-    ), "regulation_points_validity_consistency")
+    expect_ok(db, insert_point("p3", "uid3", direction="90", direction_status="inferred", lon=136.902))
     expect_error(db, insert_point("p1", "uid9"), "regulation_points_pkey")
     expect_error(db, insert_point("p9", "uid1"), "regulation_points_dataset_id_raw_uid_key")
     expect_error(db, insert_point("p9", "uid9", dataset="missing"), "regulation_points_dataset_id_fkey")
-    expect_error(db, insert_point("p9", "uid9", direction="10"), "regulation_points_direction_consistency")
-    expect_error(db, insert_point("p9", "uid9", direction_status="inferred"), "regulation_points_direction_consistency")
+    expect_error(db, insert_point("p9", "uid9", direction="10"), "regulation_points_direction_status_degrees")
+    expect_error(db, insert_point("p9", "uid9", direction_status="inferred"), "regulation_points_direction_status_degrees")
     expect_error(db, insert_point("p9", "uid9", direction="360", direction_status="confirmed"), "regulation_points_direction_range")
     expect_error(db, insert_point("p9", "uid9", direction="-1", direction_status="confirmed"), "regulation_points_direction_range")
-    expect_error(db, insert_point("p9", "uid9", direction_status="bogus"), "regulation_points_direction_consistency")
-    expect_error(db, insert_point("p9", "uid9", validity="bogus"), "regulation_points_validity_consistency")
+    expect_error(db, insert_point("p9", "uid9", direction="10", direction_status="bogus"), "regulation_points_direction_status_values")
+    expect_error(db, insert_point("p9", "uid9", validity="bogus"), "regulation_points_validity_status_values")
     expect_error(db, "INSERT INTO regulation_points (dataset_id, entity_id, raw_uid, direction_status,"
                      " validity_status, normalization_status) VALUES ('ds1','p9','uid9','unknown','unknown','normalized')",
                  "geom")
@@ -511,7 +193,7 @@ def apply_migrations(db, migrations, database="gr9_dev"):
 
 def validate_upgrade(db, migrations, report):
     s1 = next(migration for migration in migrations if migration.name == "202610140001_regulation_point_evidence.sql")
-    s2 = next(migration for migration in migrations if migration.name == "202610260001_external_stop_approach.sql")
+    later = [migration for migration in migrations if migration.name > s1.name]
     before_s1 = [migration for migration in migrations if migration.name < s1.name]
     assert before_s1 and before_s1[-1].name == "202610130001_regulation_datasets.sql", [m.name for m in before_s1]
     apply_migrations(db, before_s1, database="gr9_upgrade")
@@ -562,19 +244,13 @@ def validate_upgrade(db, migrations, report):
     candidates_snapshot = expect_ok(db, "SELECT jsonb_agg(to_jsonb(c) ORDER BY dataset_id, source_entity_id, rank)::text "
                                        "FROM regulation_candidates c", database="gr9_upgrade")
 
-    apply_migrations(db, [s2], database="gr9_upgrade")
+    apply_migrations(db, later, database="gr9_upgrade")
     assert dataset_snapshot == expect_ok(db, "SELECT jsonb_agg(to_jsonb(d) ORDER BY dataset_id)::text FROM regulation_datasets d",
-                                         database="gr9_upgrade"), "dataset rows changed during external-test migration"
-    assert points_snapshot == expect_ok(db, point_snapshot_query, database="gr9_upgrade"), "point rows changed during external-test migration"
+                                         database="gr9_upgrade"), "dataset rows changed during later migrations"
+    assert points_snapshot == expect_ok(db, point_snapshot_query, database="gr9_upgrade"), "point rows changed during later migrations"
     assert candidates_snapshot == expect_ok(db, "SELECT jsonb_agg(to_jsonb(c) ORDER BY dataset_id, source_entity_id, rank)::text "
                                                "FROM regulation_candidates c", database="gr9_upgrade"), \
-        "candidate rows changed during external-test migration"
-
-    expect_ok(db, insert_dataset(EXTERNAL_DATASET_ID, digest="e" * 64, month="202602", synthetic="false"),
-              database="gr9_upgrade")
-    expect_ok(db, insert_dataset("non-external-approved-upgrade", digest="f" * 64, synthetic="false", approved="true"),
-              database="gr9_upgrade")
-    validate_external_dataset_scope(db, "non-external-approved-upgrade", "upgrade", database="gr9_upgrade")
+        "candidate rows changed during later migrations"
 
     rows_text = expect_ok(db, "SELECT jsonb_agg(jsonb_build_object("
                              "'entity_id', entity_id, 'direction_degrees', direction_degrees,"
@@ -652,7 +328,7 @@ def main():
     assert names[0] == "202606160001_init_stop_signs.sql", names
     assert "202610130001_regulation_datasets.sql" in names, "base regulation migration is missing"
     assert "202610140001_regulation_point_evidence.sql" in names, "S1 evidence migration is missing"
-    assert names[-1] == "202610260001_external_stop_approach.sql", names
+    assert names[-1] == "202610290001_simplify_regulation_point_checks.sql", names
     cluster = Cluster(report_path, scratch_dir)
     summary = {"passed": False, "migrations": names, "scratch_directory": str(scratch_dir),
                "remote_connection_attempted": False}

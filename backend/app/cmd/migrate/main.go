@@ -64,7 +64,11 @@ func runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	bundles, err := loadSeedBundles(seeddata.FS(), seedIDs)
+	pointsDatasets, bundleIDs, err := loadSeedPoints(seeddata.PointsFS(), seedIDs)
+	if err != nil {
+		return err
+	}
+	bundles, err := loadSeedBundles(seeddata.FS(), bundleIDs)
 	if err != nil {
 		return err
 	}
@@ -107,7 +111,10 @@ func runOnce(ctx context.Context) error {
 		return fmt.Errorf("run atlas migrate apply: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 
-	return applySeedBundles(ctx, pool, bundles, os.Stdout)
+	if err := applySeedBundles(ctx, pool, bundles, os.Stdout); err != nil {
+		return err
+	}
+	return applySeedPoints(ctx, pool, pointsDatasets, os.Stdout)
 }
 
 func fail(err error) {
